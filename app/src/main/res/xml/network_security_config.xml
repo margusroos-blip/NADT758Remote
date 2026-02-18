@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      NAD/BluOS protocol endpoints on local receivers use cleartext HTTP/WS.
+      App-side address policy only allows private LAN/link-local/loopback targets.
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
