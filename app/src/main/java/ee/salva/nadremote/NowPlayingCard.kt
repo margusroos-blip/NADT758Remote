@@ -25,22 +25,17 @@ fun NowPlayingCard(
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
+    embedded: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
-    
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .animateContentSize(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
+    val isRadioText = nowPlaying.isRadio && !nowPlaying.isSpotify
+    val primaryMaxLines = if (isRadioText) 2 else 1
+    val secondaryMaxLines = if (isRadioText) 2 else 1
+
+    val content: @Composable () -> Unit = {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Album art / station logo
@@ -83,7 +78,7 @@ fun NowPlayingCard(
                     nowPlaying.displayTitle,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
+                    maxLines = primaryMaxLines,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (nowPlaying.displaySubtitle.isNotBlank()) {
@@ -91,7 +86,7 @@ fun NowPlayingCard(
                         nowPlaying.displaySubtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        maxLines = secondaryMaxLines,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -165,6 +160,23 @@ fun NowPlayingCard(
                     }
                 }
             }
+        }
+    }
+
+    if (embedded) {
+        Box(modifier = modifier.fillMaxWidth().animateContentSize()) {
+            content()
+        }
+    } else {
+        Card(
+            modifier = modifier
+                .fillMaxWidth()
+                .animateContentSize(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            content()
         }
     }
 }

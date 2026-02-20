@@ -36,6 +36,7 @@ class Prefs(private val context: Context) {
         private val KEY_FAVORITE_SOURCES = stringPreferencesKey("favorite_sources")
         private val KEY_FAVORITE_PRESETS = stringPreferencesKey("favorite_presets")
         private val KEY_AUTO_RECONNECT = stringPreferencesKey("auto_reconnect")
+        private val KEY_QUICK_BUTTON_ORDER = stringPreferencesKey("quick_button_order")
     }
 
     val savedIp: Flow<String> = context.dataStore.data.map { it[KEY_IP] ?: "" }
@@ -56,6 +57,15 @@ class Prefs(private val context: Context) {
             ?.split(",")
             ?.mapNotNull { it.trim().toIntOrNull() }
             ?.take(4)
+            ?: emptyList()
+    }
+
+    val quickButtonOrder: Flow<List<String>> = context.dataStore.data.map { prefs ->
+        prefs[KEY_QUICK_BUTTON_ORDER]
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.take(32)
             ?: emptyList()
     }
     
@@ -113,6 +123,16 @@ class Prefs(private val context: Context) {
     suspend fun setAutoReconnect(enabled: Boolean) {
         context.dataStore.edit {
             it[KEY_AUTO_RECONNECT] = enabled.toString()
+        }
+    }
+
+    suspend fun setQuickButtonOrder(order: List<String>) {
+        context.dataStore.edit {
+            it[KEY_QUICK_BUTTON_ORDER] = order
+                .map { it.trim() }
+                .filter { token -> token.isNotBlank() }
+                .take(32)
+                .joinToString(",")
         }
     }
 

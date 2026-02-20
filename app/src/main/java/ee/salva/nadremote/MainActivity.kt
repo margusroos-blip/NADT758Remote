@@ -11,11 +11,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.launch
@@ -50,7 +52,7 @@ fun NadRemoteApp(vm: NadViewModel) {
     val displaySources by vm.displaySources.collectAsState()
     val nowPlaying by vm.nowPlaying.collectAsState()
     val presets by vm.presets.collectAsState()
-    val favoritePresets by vm.favoritePresets.collectAsState()
+    val quickButtonOrder by vm.quickButtonOrder.collectAsState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -100,39 +102,47 @@ fun NadRemoteApp(vm: NadViewModel) {
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (connectionStatus == ConnectionStatus.CONNECTED) {
-                RemoteScreen(
-                    nadState = nadState,
-                    displaySources = displaySources,
-                    nowPlaying = nowPlaying,
-                    presets = presets,
-                    favoritePresets = favoritePresets,
-                    strings = strings,
-                    onPowerToggle = vm::powerToggle,
-                    onVolumeUp = vm::volumeUp,
-                    onVolumeDown = vm::volumeDown,
-                    onMuteToggle = vm::muteToggle,
-                    onSourceSelect = vm::setSource,
-                    onPlayPause = { if (nowPlaying.isPlaying) vm.blueOsPause() else vm.blueOsPlay() },
-                    onSkipNext = vm::blueOsNext,
-                    onSkipPrevious = vm::blueOsPrevious,
-                    onPresetSelect = vm::playPreset,
-                    onOpenSpotify = {
-                        coroutineScope.launch {
-                            val started = vm.startSpotifyOnBlueOs()
-                            if (!started) {
-                                Toast.makeText(
-                                    context,
-                                    "Spotify seanssi ei leitud BluOS-ist. Käivita Spotify Connect üks kord ja proovi uuesti.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
+            RemoteScreen(
+                nadState = nadState,
+                displaySources = displaySources,
+                nowPlaying = nowPlaying,
+                presets = presets,
+                strings = strings,
+                onPowerToggle = vm::powerToggle,
+                onVolumeUp = vm::volumeUp,
+                onVolumeDown = vm::volumeDown,
+                onMuteToggle = vm::muteToggle,
+                onSourceSelect = vm::setSource,
+                onPlayPause = { if (nowPlaying.isPlaying) vm.blueOsPause() else vm.blueOsPlay() },
+                onSkipNext = vm::blueOsNext,
+                onSkipPrevious = vm::blueOsPrevious,
+                onPresetSelect = vm::playPreset,
+                onOpenSpotify = {
+                    coroutineScope.launch {
+                        val started = vm.startSpotifyOnBlueOs()
+                        if (!started) {
+                            Toast.makeText(
+                                context,
+                                "Spotify seanssi ei leitud BluOS-ist. Käivita Spotify Connect üks kord ja proovi uuesti.",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
-                )
-            } else {
-                DisconnectedScreen(connectionStatus, strings, { showSettings = true }, vm::reconnect)
-            }
+                },
+                quickButtonOrder = quickButtonOrder,
+                onQuickButtonOrderChange = vm::setQuickButtonOrder,
+                onBrowseTuneIn = vm::browseTuneIn,
+                onPlayBrowseEntry = vm::playBrowseEntry
+            )
+
+            ConnectionBanner(
+                status = connectionStatus,
+                strings = strings,
+                onOpenSettings = { showSettings = true },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
         }
     }
 

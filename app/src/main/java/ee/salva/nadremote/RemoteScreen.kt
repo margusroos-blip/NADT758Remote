@@ -24,7 +24,6 @@ fun RemoteScreen(
     displaySources: Map<Int, String>,
     nowPlaying: NowPlaying,
     presets: List<Preset>,
-    favoritePresets: List<Int>,
     strings: StringResources,
     onPowerToggle: () -> Unit,
     onVolumeUp: () -> Unit,
@@ -35,7 +34,11 @@ fun RemoteScreen(
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
     onPresetSelect: (Int) -> Unit,
-    onOpenSpotify: () -> Unit
+    onOpenSpotify: () -> Unit,
+    quickButtonOrder: List<String>,
+    onQuickButtonOrderChange: (List<String>) -> Unit,
+    onBrowseTuneIn: suspend (String?) -> List<BrowseEntry>,
+    onPlayBrowseEntry: suspend (BrowseEntry) -> Boolean
 ) {
     // Check if BluOS is active
     val currentSourceName = nadState.sources[nadState.sourceId]?.lowercase() ?: ""
@@ -44,75 +47,68 @@ fun RemoteScreen(
                         currentSourceName.contains("bluesound") ||
                         nowPlaying.service.isNotBlank()
     
-    // Get favorite presets to display - sÃ¤ilitame kasutaja valitud jÃ¤rjekorra
-    val displayPresets = if (favoritePresets.isNotEmpty()) {
-        favoritePresets.mapNotNull { id -> presets.find { it.id == id } }.take(3)
-    } else {
-        presets.take(3)
-    }
-    
-    // State for showing all presets
-    var showAllPresets by remember { mutableStateOf(false) }
+    val hasNowPlaying = isBluOsSource && nowPlaying.hasContent
     
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         PowerButton(nadState.power, onPowerToggle)
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(14.dp))
         
         if (displaySources.isNotEmpty()) {
             SourceSelector(displaySources, nadState.sourceId, strings, onSourceSelect)
         }
         
-        // BluOS Presets (with Spotify button integrated)
+        // BluOS Hub - üks suur paneel, ilma topelt infota
         AnimatedVisibility(
-            visible = isBluOsSource && presets.isNotEmpty(),
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            visible = isBluOsSource && (hasNowPlaying || presets.isNotEmpty()),
+            enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 })
         ) {
-            PresetSelector(
-                presets = displayPresets,
-                strings = strings,
-                onSelect = onPresetSelect,
-                onShowAll = { showAllPresets = true },
-                onOpenSpotify = onOpenSpotify,
-                modifier = Modifier.padding(top = 16.dp)
-            )
-        }
-        
-        // Now Playing - only show when BluOS source is selected AND has content
-        AnimatedVisibility(
-            visible = isBluOsSource && nowPlaying.hasContent,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
-        ) {
-            NowPlayingCard(
-                nowPlaying = nowPlaying,
-                strings = strings,
-                onPlayPause = onPlayPause,
-                onSkipNext = onSkipNext,
-                onSkipPrevious = onSkipPrevious,
-                modifier = Modifier.padding(top = 16.dp)
-            )
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 14.dp),
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                tonalElevation = 2.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (hasNowPlaying) {
+                    NowPlayingCard(
+                        nowPlaying = nowPlaying,
+                        strings = strings,
+                        onPlayPause = onPlayPause,
+                        onSkipNext = onSkipNext,
+                        onSkipPrevious = onSkipPrevious,
+                        embedded = true
+                    )
+                }
+
+                    if (presets.isNotEmpty()) {
+                        PresetSelector(
+                            presets = presets,
+                            strings = strings,
+                            onSelect = onPresetSelect,
+                            onOpenSpotify = onOpenSpotify,
+                            onBrowseTuneIn = onBrowseTuneIn,
+                            onPlayBrowseEntry = onPlayBrowseEntry,
+                            quickButtonOrder = quickButtonOrder,
+                            onQuickButtonOrderChange = onQuickButtonOrderChange,
+                            showTitle = false
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(Modifier.weight(1f))
         VolumeControl(nadState.volume, nadState.mute, strings, onVolumeUp, onVolumeDown, onMuteToggle)
         Spacer(Modifier.weight(1f))
-    }
-    
-    // All Presets Bottom Sheet
-    if (showAllPresets) {
-        AllPresetsSheet(
-            presets = presets,
-            strings = strings,
-            onSelect = { presetId ->
-                onPresetSelect(presetId)
-                showAllPresets = false
-            },
-            onDismiss = { showAllPresets = false }
-        )
     }
 }
 
@@ -167,7 +163,7 @@ fun SourceSelector(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            sources[currentSourceId] ?: "â€“",
+            sources[currentSourceId] ?: "-",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary

@@ -3,8 +3,10 @@
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class NadViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -41,6 +43,9 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
     
     // Favorite presets (max 4)
     val favoritePresets: StateFlow<List<Int>> = prefs.favoritePresets
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val quickButtonOrder: StateFlow<List<String>> = prefs.quickButtonOrder
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     
     // Auto-reconnect setting
@@ -169,6 +174,12 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setQuickButtonOrder(order: List<String>) {
+        viewModelScope.launch {
+            prefs.setQuickButtonOrder(order)
+        }
+    }
+
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // Controls
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -203,12 +214,28 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Proovib jätkata olemasolevat Spotify sessiooni BluOS kaudu.
      */
-    suspend fun tryResumeSpotify(): Boolean = blueOs.tryResumeSpotify()
+    suspend fun tryResumeSpotify(): Boolean = withContext(Dispatchers.IO) {
+        blueOs.tryResumeSpotify()
+    }
 
     /**
      * Käivitab Spotify BluOS seadmes ilma telefoni Spotify äppi avamata.
      */
-    suspend fun startSpotifyOnBlueOs(): Boolean = blueOs.startSpotifyOnBlueOs()
+    suspend fun startSpotifyOnBlueOs(): Boolean = withContext(Dispatchers.IO) {
+        blueOs.startSpotifyOnBlueOs()
+    }
+
+    suspend fun saveCurrentBluOsPreset(name: String): Boolean = withContext(Dispatchers.IO) {
+        blueOs.saveCurrentAsPreset(name)
+    }
+
+    suspend fun browseTuneIn(key: String?): List<BrowseEntry> = withContext(Dispatchers.IO) {
+        blueOs.browseTuneIn(key)
+    }
+
+    suspend fun playBrowseEntry(entry: BrowseEntry): Boolean = withContext(Dispatchers.IO) {
+        blueOs.playBrowseEntry(entry)
+    }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     // Discovery

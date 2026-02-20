@@ -24,3 +24,9 @@ Märkus:
 Kontroll:
 - Veendu, et telefon ja NAD on samas subnetis.
 - Kui mDNS ei leia, kasuta "Scan subnet" või sisesta IP käsitsi.
+
+Windows build stabiilsus:
+- Kui corporate poliitikad teevad `%USERPROFILE%\.gradle` kaustaga probleeme voi `JAVA_HOME` ei lahe alati kaima,
+  kasuta projekti juures:
+      gradlew-safe.bat :app:assembleDebug
+  See kasutab Android Studio JBR-i ja lokaalselt projekti `.gradle-user-home` cache'i.

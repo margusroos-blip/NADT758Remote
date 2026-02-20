@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 import org.xmlpull.v1.XmlPullParser
@@ -33,7 +34,7 @@ class BlueOsClient {
         private const val TAG = "BlueOS"
         private const val LONG_POLL_TIMEOUT = 100 // sekundit (BluOS soovitab 100)
         private const val SPOTIFY_WAIT_ATTEMPTS = 12
-        private const val SPOTIFY_WAIT_STEP_MS = 1000L
+        private const val SPOTIFY_WAIT_STEP_MS = 350L
     }
 
     // Tavaline klient kiirte pÃ¤ringute jaoks (presets, commands)
@@ -53,6 +54,7 @@ class BlueOsClient {
     private var currentEtag: String = ""
     private var cachedSpotifySourceUrl: String? = null
     private var cachedSpotifyPresetId: Int? = null
+    private var statusActions: List<StatusAction> = emptyList()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     private val _nowPlaying = MutableStateFlow(NowPlaying())
@@ -81,6 +83,7 @@ class BlueOsClient {
         currentEtag = ""
         cachedSpotifySourceUrl = null
         cachedSpotifyPresetId = null
+        statusActions = emptyList()
         _nowPlaying.value = NowPlaying()
         _presets.value = emptyList()
     }
@@ -177,6 +180,7 @@ class BlueOsClient {
             var totlen = 0
             var secs = 0
             var currentTag = ""
+            val actions = mutableListOf<StatusAction>()
             
             while (parser.eventType != XmlPullParser.END_DOCUMENT) {
                 when (parser.eventType) {
@@ -184,6 +188,18 @@ class BlueOsClient {
                         currentTag = parser.name
                         if (currentTag == "status") {
                             etag = parser.getAttributeValue(null, "etag") ?: ""
+                        }
+                        if (currentTag == "action") {
+                            val actionUrl = parser.getAttributeValue(null, "url").orEmpty().trim()
+                            if (actionUrl.isNotBlank()) {
+                                actions.add(
+                                    StatusAction(
+                                        name = parser.getAttributeValue(null, "name").orEmpty(),
+                                        text = parser.getAttributeValue(null, "text").orEmpty(),
+                                        url = actionUrl
+                                    )
+                                )
+                            }
                         }
                         // streamUrl olemasolu on oluline isegi kui sisu on tÃ¼hi
                         if (currentTag == "streamUrl") {
@@ -235,7 +251,9 @@ class BlueOsClient {
                 track = title1,
                 album = album.ifBlank { title3 },
                 stationName = name,
-                showName = if (hasStreamUrl || service.contains("TuneIn", true)) title1 else "",
+                showName = if (hasStreamUrl || service.contains("TuneIn", true)) {
+                    title1.ifBlank { title2 }
+                } else "",
                 imageUrl = when {
                     image.startsWith("http") -> image
                     image.isNotBlank() -> "http://$ip:11000$image?followRedirects=1"
@@ -245,9 +263,11 @@ class BlueOsClient {
                 canSeek = canSeek,
                 totalSeconds = totlen,
                 currentSeconds = secs,
-                isStream = hasStreamUrl
+                isStream = hasStreamUrl,
+                canSavePreset = actions.any { isSavePresetAction(it) }
             )
             
+            statusActions = actions
             _nowPlaying.value = nowPlaying
             
         } catch (e: Exception) {
@@ -362,6 +382,62 @@ class BlueOsClient {
     fun next() = sendCommand("Skip")
     fun previous() = sendCommand("Back")
 
+    suspend fun browseTuneIn(key: String?): List<BrowseEntry> {
+        if (ip.isBlank()) return emptyList()
+
+        return if (key.isNullOrBlank()) {
+            val rootItems = fetchBrowseItems("http://$ip:11000/Browse")
+            val tuneInRoot = rootItems.firstOrNull { isTuneInBrowseItem(it) } ?: return emptyList()
+            val browseKey = tuneInRoot.browseKey
+            val tuneInItems = if (browseKey.isNotBlank()) {
+                fetchBrowseItems(buildBrowseByKeyUrl(browseKey))
+            } else {
+                listOf(tuneInRoot)
+            }
+            tuneInItems.map { it.toBrowseEntry() }
+        } else {
+            fetchBrowseItems(buildBrowseByKeyUrl(key)).map { it.toBrowseEntry() }
+        }
+    }
+
+    suspend fun playBrowseEntry(entry: BrowseEntry): Boolean {
+        if (ip.isBlank()) return false
+        val candidates = listOf(entry.autoplayUrl, entry.playUrl, entry.actionUrl)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        for (candidate in candidates) {
+            if (playBrowseUrl(candidate)) return true
+        }
+        return false
+    }
+
+    suspend fun saveCurrentAsPreset(name: String): Boolean {
+        if (ip.isBlank()) return false
+
+        fetchStatus(longPoll = false)
+        val presetName = sanitizePresetName(name).ifBlank { suggestedPresetName() }
+
+        var saved = false
+
+        val actionUrl = statusActions.firstOrNull { isSavePresetAction(it) }?.url
+        if (!actionUrl.isNullOrBlank()) {
+            saved = trySaveViaActionUrl(actionUrl, presetName)
+        }
+
+        if (!saved) {
+            saved = trySaveViaSaveEndpoint(presetName)
+        }
+
+        if (saved) {
+            currentEtag = ""
+            delay(350)
+            fetchPresets()
+        }
+
+        return saved
+    }
+
     /**
      * Käivitab Spotify BluOS seadmel:
      * 1) proovi jätkata olemasolevat sessiooni (/Play)
@@ -372,21 +448,43 @@ class BlueOsClient {
         if (ip.isBlank()) return false
 
         fetchStatus(longPoll = false)
-        if (_nowPlaying.value.isSpotify) {
+        val initial = _nowPlaying.value
+        if (initial.isSpotify) {
             return true
         }
 
-        if (tryResumeSpotify()) return true
+        // Kui mängib TuneIn, siis /Play ei aita ja lisab ainult viidet.
+        if (!initial.service.contains("TuneIn", true)) {
+            if (tryResumeSpotify()) return true
+        }
+
+        val cached = cachedSpotifySourceUrl
+        if (!cached.isNullOrBlank() &&
+            isPlayableSourceCandidate(cached) &&
+            isSpotifySourceCandidate(cached) &&
+            playSpotifySource(cached) &&
+            waitForSpotifyActivation(attempts = 6, stepMs = 300L)
+        ) {
+            return true
+        }
+
+        var switchTriggered = false
 
         val spotifySourceCandidates = fetchSpotifySourceCandidates()
-        for (sourceUrl in spotifySourceCandidates) {
-            if (!playSpotifySource(sourceUrl)) continue
-            if (waitForSpotifyActivation()) return true
+        for (sourceUrl in spotifySourceCandidates.take(4)) {
+            if (playSpotifySource(sourceUrl)) {
+                switchTriggered = true
+                if (waitForSpotifyActivation(attempts = 5, stepMs = 300L)) return true
+            }
         }
 
         val spotifyPresetId = findSpotifyPresetId()
-        if (spotifyPresetId != null && playPresetInternal(spotifyPresetId) && waitForSpotifyActivation()) {
-            return true
+        if (spotifyPresetId != null && playPresetInternal(spotifyPresetId)) {
+            switchTriggered = true
+        }
+
+        if (switchTriggered) {
+            if (waitForSpotifyActivation()) return true
         }
 
         return false
@@ -408,7 +506,7 @@ class BlueOsClient {
             currentEtag = ""
             
             // Oota natuke et BluOS jÃµuaks reageerida
-            delay(1500)
+            delay(450)
             
             // Kontrolli staatust - kas Spotify hakkas mÃ¤ngima?
             fetchStatus(longPoll = false)
@@ -420,9 +518,12 @@ class BlueOsClient {
         }
     }
 
-    private suspend fun waitForSpotifyActivation(): Boolean {
-        repeat(SPOTIFY_WAIT_ATTEMPTS) {
-            delay(SPOTIFY_WAIT_STEP_MS)
+    private suspend fun waitForSpotifyActivation(
+        attempts: Int = SPOTIFY_WAIT_ATTEMPTS,
+        stepMs: Long = SPOTIFY_WAIT_STEP_MS
+    ): Boolean {
+        repeat(attempts) {
+            delay(stepMs)
             fetchStatus(longPoll = false)
             val current = _nowPlaying.value
             if (current.isSpotify) {
@@ -436,37 +537,32 @@ class BlueOsClient {
         if (ip.isBlank()) return emptyList()
         val candidates = LinkedHashSet<String>()
         cachedSpotifySourceUrl
-            ?.takeIf { isPlayableSourceCandidate(it) }
+            ?.takeIf { isPlayableSourceCandidate(it) && isSpotifySourceCandidate(it) }
             ?.let { candidates.add(it) }
 
-        // BluOS API docs: /RadioBrowse?service=Capture sisaldab Spotify URL-i (Spotify%3Aplay)
+        // Hard fallback-id enne browse käiku.
+        candidates.add("/Play?service=Spotify")
+        candidates.add("/Play?url=Spotify%3Aplay")
+        candidates.add("/Play?url=Spotify:play")
         candidates.add("Spotify%3Aplay")
         candidates.add("Spotify:play")
 
-        val endpoints = listOf(
-            "http://$ip:11000/RadioBrowse?service=Capture" to false,
-            "http://$ip:11000/Browse?service=Capture" to false,
-            "http://$ip:11000/RadioBrowse?service=Spotify" to true,
-            "http://$ip:11000/Browse?service=Spotify" to true,
-            "http://$ip:11000/Services" to false,
-            "http://$ip:11000/Browse" to false
-        )
-
-        val visitedKeys = mutableSetOf<String>()
-        val visitedUrls = mutableSetOf<String>()
-        for ((url, assumeSpotify) in endpoints) {
-            val discovered = fetchSpotifySourceCandidatesFromEndpoint(
-                url = url,
-                assumeSpotify = assumeSpotify,
-                visitedKeys = visitedKeys,
-                visitedUrls = visitedUrls,
-                depth = 0
-            )
-            discovered.forEach { candidates.add(it) }
+        // Kiire tee: loe ainult root Browse ja vajadusel üks tase Spotify key alla.
+        val rootItems = fetchBrowseItems("http://$ip:11000/Browse")
+        val spotifyRoot = rootItems.firstOrNull { isSpotifyBrowseItem(it, assumeSpotify = false) }
+        if (spotifyRoot != null) {
+            extractPlayableUrl(spotifyRoot)?.let { candidates.add(it) }
+            val key = spotifyRoot.browseKey
+            if (key.isNotBlank()) {
+                val spotifyItems = fetchBrowseItems(buildBrowseByKeyUrl(key))
+                spotifyItems
+                    .mapNotNull { extractPlayableUrl(it) }
+                    .filter { isSpotifySourceCandidate(it) }
+                    .forEach { candidates.add(it) }
+            }
         }
 
         if (candidates.isNotEmpty()) {
-            cachedSpotifySourceUrl = candidates.first()
             Log.d(TAG, "Spotify source candidates (${candidates.size}): ${candidates.take(6)}")
         } else {
             Log.d(TAG, "Spotify source candidates not found")
@@ -475,53 +571,16 @@ class BlueOsClient {
         return candidates.toList()
     }
 
-    private suspend fun fetchSpotifySourceCandidatesFromEndpoint(
-        url: String,
-        assumeSpotify: Boolean,
-        visitedKeys: MutableSet<String>,
-        visitedUrls: MutableSet<String>,
-        depth: Int
-    ): List<String> {
-        if (depth > 2 || !visitedUrls.add(url)) return emptyList()
+    private suspend fun fetchBrowseItems(url: String): List<BrowseItem> {
         return try {
             val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return emptyList()
                 val xml = response.body?.string() ?: return emptyList()
-                val items = parseBrowseItems(xml)
-                val discovered = LinkedHashSet<String>()
-
-                for (item in items) {
-                    val spotifyItem = isSpotifyBrowseItem(item, assumeSpotify)
-                    if (!spotifyItem && !assumeSpotify) continue
-                    extractPlayableUrl(item)?.let { discovered.add(it) }
-                }
-
-                val browseKeys = items.asSequence()
-                    .filter { isSpotifyBrowseItem(it, assumeSpotify) || assumeSpotify }
-                    .mapNotNull { it.browseKey.takeIf { key -> key.isNotBlank() } }
-                    .distinct()
-                    .take(8)
-                    .toList()
-
-                for (key in browseKeys) {
-                    if (!visitedKeys.add(key)) continue
-                    val browseUrl = buildBrowseByKeyUrl(key)
-                    discovered.addAll(
-                        fetchSpotifySourceCandidatesFromEndpoint(
-                            url = browseUrl,
-                            assumeSpotify = true,
-                            visitedKeys = visitedKeys,
-                            visitedUrls = visitedUrls,
-                            depth = depth + 1
-                        )
-                    )
-                }
-
-                discovered.toList()
+                parseBrowseItems(xml)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Spotify source fetch failed ($url): ${e.message}")
+            Log.w(TAG, "Browse fetch failed ($url): ${e.message}")
             emptyList()
         }
     }
@@ -611,33 +670,103 @@ class BlueOsClient {
     private suspend fun playSpotifySource(sourceUrl: String): Boolean {
         if (ip.isBlank() || sourceUrl.isBlank()) return false
         return try {
-            val requestUrl = if (looksLikeApiUrl(sourceUrl)) {
-                normalizeApiUrl(sourceUrl).takeIf { isPlayableApiEndpoint(it) } ?: return false
-            } else {
-                val playUrlBuilder = "http://$ip:11000/Play".toHttpUrl().newBuilder()
-                if (sourceUrl.contains('%')) {
-                    playUrlBuilder.addEncodedQueryParameter("url", sourceUrl)
-                } else {
-                    playUrlBuilder.addQueryParameter("url", sourceUrl)
+            val requestUrls = buildSpotifyPlayRequestUrls(sourceUrl)
+            if (requestUrls.isEmpty()) return false
+
+            for (requestUrl in requestUrls) {
+                val request = Request.Builder().url(requestUrl).build()
+                val ok = client.newCall(request).execute().use { response ->
+                    response.isSuccessful
                 }
-                playUrlBuilder.build().toString()
-            }
-
-            val request = Request.Builder().url(requestUrl).build()
-
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
+                if (ok) {
                     currentEtag = ""
                     cachedSpotifySourceUrl = sourceUrl
-                    true
-                } else {
-                    false
+                    return true
                 }
             }
+            false
         } catch (e: Exception) {
             Log.w(TAG, "Spotify source play failed: ${e.message}")
             false
         }
+    }
+
+    private fun buildSpotifyPlayRequestUrls(sourceUrl: String): List<String> {
+        if (ip.isBlank() || sourceUrl.isBlank()) return emptyList()
+        if (looksLikeApiUrl(sourceUrl)) {
+            val normalized = normalizeApiUrl(sourceUrl)
+            return if (isPlayableApiEndpoint(normalized)) listOf(normalized) else emptyList()
+        }
+
+        val urls = LinkedHashSet<String>()
+        val base = "http://$ip:11000/Play".toHttpUrl()
+
+        // Variant A: allikas on juba URL-encoded (nt Spotify%3Aplay)
+        if (sourceUrl.contains('%')) {
+            urls.add(
+                base.newBuilder()
+                    .addEncodedQueryParameter("url", sourceUrl)
+                    .build()
+                    .toString()
+            )
+            // Variant B: mõni BluOS firmware ootab topeltkodeeringut query sees.
+            urls.add(
+                base.newBuilder()
+                    .addQueryParameter("url", sourceUrl)
+                    .build()
+                    .toString()
+            )
+        } else {
+            urls.add(
+                base.newBuilder()
+                    .addQueryParameter("url", sourceUrl)
+                    .build()
+                    .toString()
+            )
+        }
+
+        return urls.toList()
+    }
+
+    private suspend fun playBrowseUrl(rawUrl: String): Boolean {
+        if (ip.isBlank() || rawUrl.isBlank()) return false
+        return try {
+            val requestUrls = buildGenericPlayRequestUrls(rawUrl)
+            if (requestUrls.isEmpty()) return false
+
+            for (requestUrl in requestUrls) {
+                val request = Request.Builder().url(requestUrl).build()
+                val ok = client.newCall(request).execute().use { response ->
+                    response.isSuccessful
+                }
+                if (ok) {
+                    currentEtag = ""
+                    return true
+                }
+            }
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Browse play failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun buildGenericPlayRequestUrls(sourceUrl: String): List<String> {
+        if (ip.isBlank() || sourceUrl.isBlank()) return emptyList()
+        if (looksLikeApiUrl(sourceUrl)) {
+            return listOf(normalizeApiUrl(sourceUrl))
+        }
+        if (sourceUrl.startsWith("http://", true) || sourceUrl.startsWith("https://", true)) {
+            return listOf(sourceUrl)
+        }
+
+        val base = "http://$ip:11000/Play".toHttpUrl()
+        return listOf(
+            base.newBuilder()
+                .addQueryParameter("url", sourceUrl)
+                .build()
+                .toString()
+        )
     }
 
     private data class BrowseItem(
@@ -653,6 +782,28 @@ class BlueOsClient {
         val url: String
     )
 
+    private data class StatusAction(
+        val name: String,
+        val text: String,
+        val url: String
+    )
+
+    private fun BrowseItem.toBrowseEntry(): BrowseEntry {
+        val titleText = firstNonBlank(text, name, title, service, id)
+        val subtitleText = when {
+            service.isNotBlank() && !service.equals(titleText, true) -> service
+            else -> ""
+        }
+        return BrowseEntry(
+            title = titleText,
+            subtitle = subtitleText,
+            browseKey = browseKey,
+            playUrl = playUrl,
+            autoplayUrl = autoplayUrl,
+            actionUrl = actionUrl
+        )
+    }
+
     private fun isSpotifyBrowseItem(item: BrowseItem, assumeSpotify: Boolean): Boolean {
         if (assumeSpotify) return true
         val haystack = listOf(
@@ -660,6 +811,14 @@ class BlueOsClient {
             item.browseKey, item.playUrl, item.autoplayUrl, item.actionUrl, item.url
         ).joinToString("|")
         return haystack.contains("spotify", true)
+    }
+
+    private fun isTuneInBrowseItem(item: BrowseItem): Boolean {
+        val haystack = listOf(
+            item.id, item.text, item.name, item.title, item.service
+        ).joinToString("|")
+        return haystack.contains("tunein", true) ||
+            haystack.contains("radio", true)
     }
 
     private fun extractPlayableUrl(item: BrowseItem): String? {
@@ -712,8 +871,82 @@ class BlueOsClient {
         return value.contains(':')
     }
 
+    private fun isSpotifySourceCandidate(source: String): Boolean {
+        val value = source.trim()
+        if (value.isBlank()) return false
+        return value.contains("spotify", true) ||
+            value.contains("Spotify%3A", true) ||
+            value.contains("service=Spotify", true)
+    }
+
     private fun firstNonBlank(vararg values: String?): String {
         return values.firstOrNull { !it.isNullOrBlank() }?.trim() ?: ""
+    }
+
+    private fun isSavePresetAction(action: StatusAction): Boolean {
+        val haystack = "${action.name}|${action.text}|${action.url}".lowercase()
+        if (haystack.contains("remove") || haystack.contains("delete")) return false
+        return haystack.contains("preset") ||
+            haystack.contains("favorite") ||
+            haystack.contains("favourite") ||
+            haystack.contains("bookmark") ||
+            haystack.contains("save")
+    }
+
+    private suspend fun trySaveViaActionUrl(rawUrl: String, presetName: String): Boolean {
+        val normalized = normalizeApiUrl(rawUrl)
+        val parsed = normalized.toHttpUrlOrNull() ?: return false
+        val builder = parsed.newBuilder()
+
+        val likelyNeedsName = parsed.queryParameterNames.any { it.equals("name", true) } ||
+            normalized.contains("setpreset", true) ||
+            normalized.contains("/save", true)
+        if (likelyNeedsName) {
+            builder.setQueryParameter("name", presetName)
+        }
+
+        return try {
+            val request = Request.Builder()
+                .url(builder.build())
+                .build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "Save via action URL failed: ${e.message}")
+            false
+        }
+    }
+
+    private suspend fun trySaveViaSaveEndpoint(presetName: String): Boolean {
+        return try {
+            val requestUrl = "http://$ip:11000/Save".toHttpUrl()
+                .newBuilder()
+                .addQueryParameter("name", presetName)
+                .build()
+
+            val request = Request.Builder().url(requestUrl).build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "Save endpoint failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun sanitizePresetName(name: String): String {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return ""
+        return trimmed.take(60)
+    }
+
+    private fun suggestedPresetName(): String {
+        val now = _nowPlaying.value
+        val candidate = when {
+            now.isRadio -> now.stationName.ifBlank { now.displayTitle }
+            now.track.isNotBlank() && now.artist.isNotBlank() -> "${now.artist} - ${now.track}"
+            now.track.isNotBlank() -> now.track
+            now.service.isNotBlank() -> now.service
+            else -> "My preset"
+        }
+        return sanitizePresetName(candidate).ifBlank { "My preset" }
     }
 
     private suspend fun findSpotifyPresetId(): Int? {
@@ -821,12 +1054,13 @@ data class NowPlaying(
     // Playback vÃµimalused
     val canSkip: Boolean = false,
     val canSeek: Boolean = false,
+    val canSavePreset: Boolean = false,
     val totalSeconds: Int = 0,
     val currentSeconds: Int = 0,
     val isStream: Boolean = false
 ) {
     val hasContent: Boolean
-        get() = track.isNotBlank() || stationName.isNotBlank()
+        get() = track.isNotBlank() || stationName.isNotBlank() || showName.isNotBlank()
     
     val isRadio: Boolean
         get() = isStream || service.contains("TuneIn", true) || 
@@ -853,13 +1087,29 @@ data class NowPlaying(
     
     val displaySubtitle: String
         get() = when {
-            isRadio && !isSpotify -> if (showName.isNotBlank()) stationName else ""
+            isRadio && !isSpotify -> artist.ifBlank {
+                if (showName.isNotBlank()) stationName else ""
+            }
             else -> artist
         }
     
-    /** Kolmas rida - album Spotify/muusika puhul */
+    /** Kolmas rida - album muusika puhul, raadio puhul jaama nimi/extra text */
     val displayAlbum: String
-        get() = if (!isRadio) album else ""
+        get() = when {
+            !isRadio -> album
+            isRadio && !isSpotify -> {
+                when {
+                    album.isNotBlank() &&
+                        !album.equals(displayTitle, true) &&
+                        !album.equals(displaySubtitle, true) -> album
+                    stationName.isNotBlank() &&
+                        !stationName.equals(displayTitle, true) &&
+                        !stationName.equals(displaySubtitle, true) -> stationName
+                    else -> ""
+                }
+            }
+            else -> ""
+        }
 }
 
 data class Preset(
@@ -868,5 +1118,20 @@ data class Preset(
     val url: String = "",
     val imageUrl: String = ""
 )
+
+data class BrowseEntry(
+    val title: String = "",
+    val subtitle: String = "",
+    val browseKey: String = "",
+    val playUrl: String = "",
+    val autoplayUrl: String = "",
+    val actionUrl: String = ""
+) {
+    val isBrowsable: Boolean
+        get() = browseKey.isNotBlank()
+
+    val isPlayable: Boolean
+        get() = playUrl.isNotBlank() || autoplayUrl.isNotBlank() || actionUrl.isNotBlank()
+}
 
 
