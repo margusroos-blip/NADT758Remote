@@ -29,7 +29,7 @@ fun ConnectionIndicator(status: ConnectionStatus) {
         ConnectionStatus.CONNECTED -> Color(0xFF4CAF50)    // Green
         ConnectionStatus.CONNECTING -> Color(0xFFFFC107)   // Yellow
         ConnectionStatus.ERROR -> Color(0xFFF44336)        // Red
-        ConnectionStatus.DISCONNECTED -> Color(0xFF9E9E9E) // Gray
+        ConnectionStatus.DISCONNECTED -> Color(0xFFF44336) // Red
     }
     
     Box(

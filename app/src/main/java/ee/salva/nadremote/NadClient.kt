@@ -21,6 +21,7 @@ class NadClient {
         .pingInterval(15, TimeUnit.SECONDS)
         .build()
 
+    @Volatile
     private var ws: WebSocket? = null
 
     private val _state = MutableStateFlow(NadState())
@@ -51,38 +52,50 @@ class NadClient {
         ws = client.newWebSocket(req, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (webSocket !== ws) return
                 _connectionStatus.value = ConnectionStatus.CONNECTED
                 _error.value = null
                 queryAll()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                if (webSocket !== ws) return
                 parseResponse(text)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                if (webSocket !== ws) return
                 parseResponse(bytes.utf8())
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (webSocket !== ws) return
                 _connectionStatus.value = ConnectionStatus.ERROR
                 _error.value = t.message ?: "Ãœhenduse viga"
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (webSocket !== ws) return
+                ws = null
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
             }
         })
     }
 
     fun disconnect() {
-        ws?.close(1000, "bye")
+        val socket = ws
         ws = null
+        socket?.close(1000, "bye")
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
     }
 
     fun send(cmd: String) {
-        ws?.send(cmd)
+        val socket = ws ?: return
+        val sent = socket.send(cmd)
+        if (sent && _connectionStatus.value != ConnectionStatus.CONNECTED) {
+            _connectionStatus.value = ConnectionStatus.CONNECTED
+            _error.value = null
+        }
     }
 
     private fun queryAll() {

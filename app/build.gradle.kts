@@ -4,6 +4,9 @@ plugins {
 }
 
 android {
+    val privacyPolicyUrl = (project.findProperty("PRIVACY_POLICY_URL") as String?)
+        ?: "https://example.com/privacy"
+
     namespace = "com.nadremote.app"
     compileSdk = 35
 
@@ -14,6 +17,7 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "PRIVACY_POLICY_URL", "\"$privacyPolicyUrl\"")
 
         vectorDrawables {
             useSupportLibrary = true
@@ -37,6 +41,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     // For Kotlin 1.9.24, use matching Compose compiler

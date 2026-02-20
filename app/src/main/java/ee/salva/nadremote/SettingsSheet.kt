@@ -7,6 +7,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -19,19 +21,22 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsSheet(
     vm: NadViewModel,
     onDismiss: () -> Unit
 ) {
     val strings by vm.strings.collectAsState()
+    val uriHandler = LocalUriHandler.current
     val savedIp by vm.savedIp.collectAsState()
     val devices by vm.devices.collectAsState()
     val isScanning by vm.isScanning.collectAsState()
@@ -88,43 +93,70 @@ fun SettingsSheet(
                             enter = expandVertically() + fadeIn(),
                             exit = shrinkVertically() + fadeOut()
                         ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    "${selectedFavorites.size}/4",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            val sourceEntries = remember(nadState.enabledSources) {
+                                nadState.enabledSources.toList().sortedBy { it.first }
+                            }
 
-                                nadState.enabledSources.forEach { (id, name) ->
-                                    val isSelected = id in selectedFavorites
-                                    val canSelect = selectedFavorites.size < 4 || isSelected
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f))
+                                    ) {
+                                        Text(
+                                            text = "${selectedFavorites.size}/4",
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
 
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            selectedFavorites = if (isSelected) selectedFavorites - id
-                                            else if (canSelect) selectedFavorites + id
-                                            else selectedFavorites
-                                            vm.setFavoriteSources(selectedFavorites.toList().sorted())
-                                        },
-                                        label = { Text(name) },
-                                        enabled = canSelect || isSelected,
-                                        leadingIcon = if (isSelected) {
-                                            { Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }
-                                        } else null,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
+                                    if (selectedFavorites.isNotEmpty()) {
+                                        TextButton(
+                                            onClick = {
+                                                selectedFavorites = emptySet()
+                                                vm.setFavoriteSources(emptyList())
+                                            }
+                                        ) {
+                                            Text("Clear all")
+                                        }
+                                    }
                                 }
 
-                                if (selectedFavorites.isNotEmpty()) {
-                                    TextButton(
-                                        onClick = {
-                                            selectedFavorites = emptySet()
-                                            vm.setFavoriteSources(emptyList())
-                                        },
-                                        modifier = Modifier.align(Alignment.End)
+                                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                                    val cardWidth = (maxWidth - 8.dp) / 2
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        maxItemsInEachRow = 2
                                     ) {
-                                        Text("Clear all")
+                                        sourceEntries.forEach { (id, name) ->
+                                            val isSelected = id in selectedFavorites
+                                            val canSelect = selectedFavorites.size < 4 || isSelected
+
+                                            FavoriteSourceCard(
+                                                name = name,
+                                                isSelected = isSelected,
+                                                enabled = canSelect || isSelected,
+                                                modifier = Modifier.width(cardWidth),
+                                                onClick = {
+                                                    selectedFavorites = if (isSelected) {
+                                                        selectedFavorites - id
+                                                    } else if (canSelect) {
+                                                        selectedFavorites + id
+                                                    } else {
+                                                        selectedFavorites
+                                                    }
+                                                    vm.setFavoriteSources(selectedFavorites.toList().sorted())
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -184,6 +216,40 @@ fun SettingsSheet(
                         ThemeOption(strings.themeSystem, Icons.Default.Brightness6, currentTheme == AppTheme.SYSTEM, { vm.setTheme(AppTheme.SYSTEM) }, Modifier.weight(1f))
                         ThemeOption(strings.themeLight, Icons.Default.LightMode, currentTheme == AppTheme.LIGHT, { vm.setTheme(AppTheme.LIGHT) }, Modifier.weight(1f))
                         ThemeOption(strings.themeDark, Icons.Default.DarkMode, currentTheme == AppTheme.DARK, { vm.setTheme(AppTheme.DARK) }, Modifier.weight(1f))
+                    }
+                }
+            }
+
+            item {
+                SettingsCard {
+                    SettingsSectionHeader(
+                        icon = Icons.Default.Policy,
+                        title = "Privacy policy",
+                        subtitle = "How this app handles your data"
+                    )
+
+                    Surface(
+                        onClick = { uriHandler.openUri(BuildConfig.PRIVACY_POLICY_URL) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = BuildConfig.PRIVACY_POLICY_URL,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Icon(Icons.Default.OpenInNew, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
@@ -527,6 +593,65 @@ fun DeviceConnectionCard(
 
                     ConnectionStatus.CONNECTING -> Unit
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoriteSourceCard(
+    name: String,
+    isSelected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = { if (enabled || isSelected) onClick() },
+        modifier = modifier.alpha(if (enabled || isSelected) 1f else 0.48f),
+        shape = RoundedCornerShape(14.dp),
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.88f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.52f)
+        },
+        tonalElevation = if (isSelected) 2.dp else 0.dp,
+        border = BorderStroke(
+            1.dp,
+            if (isSelected) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)
+            }
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = getSourceIcon(name),
+                contentDescription = null,
+                modifier = Modifier.size(17.dp),
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = name,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelLarge,
+                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1
+            )
+            if (isSelected) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }

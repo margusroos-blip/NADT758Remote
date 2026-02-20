@@ -30,3 +30,10 @@ Windows build stabiilsus:
   kasuta projekti juures:
       gradlew-safe.bat :app:assembleDebug
   See kasutab Android Studio JBR-i ja lokaalselt projekti `.gradle-user-home` cache'i.
+
+Privacy policy (Play Console):
+- A ready page is included at `docs/privacy-policy.html`.
+- Publish it with GitHub Pages (Settings -> Pages -> Deploy from branch -> `main` + `/docs`).
+- Then set `PRIVACY_POLICY_URL` in `gradle.properties` to:
+    https://<your-github-username>.github.io/NADT758Remote/privacy-policy.html
+- Rebuild the app so the in-app Settings link uses the same URL.
