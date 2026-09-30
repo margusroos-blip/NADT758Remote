@@ -1,6 +1,8 @@
 ﻿package com.nadremote.app
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -9,6 +11,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
@@ -99,24 +102,19 @@ class NadDiscovery(private val context: Context) {
     suspend fun scanSubnet(): List<FoundDevice> = coroutineScope {
         _isScanning.value = true
 
-        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val dhcp = wm?.dhcpInfo
-        if (dhcp == null || dhcp.ipAddress == 0) {
+        val hosts = scanTargets()
+        if (hosts.isEmpty()) {
             _isScanning.value = false
             return@coroutineScope emptyList()
         }
 
-        val ipBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(dhcp.ipAddress).array()
-        val baseIp = "${ipBytes[0].toInt() and 0xFF}.${ipBytes[1].toInt() and 0xFF}.${ipBytes[2].toInt() and 0xFF}"
-
         val results = mutableListOf<FoundDevice>()
         val semaphore = Semaphore(50)
 
-        (1..254).map { i ->
+        hosts.map { ip ->
             async(Dispatchers.IO) {
                 semaphore.acquire()
                 try {
-                    val ip = "$baseIp.$i"
                     if (isPortOpen(ip, 8585, 200)) {
                         val device = FoundDevice("NAD @ $ip", ip)
                         synchronized(results) { results.add(device) }
@@ -131,6 +129,61 @@ class NadDiscovery(private val context: Context) {
 
         _isScanning.value = false
         results
+    }
+
+    /**
+     * Wi-Fi võrgu aadressid, mida skaneerida. Arvestab päris võrgumaski (nt /22 võrgus
+     * 192.168.68.0-192.168.71.255), mitte ainult telefoni enda /24 vahemikku.
+     * Suurema võrgu korral piirdub telefoni ümbritseva /22 plokiga (max 1022 aadressi).
+     * Telefoni enda /24 tuleb esimesena, sest seade on enamasti seal.
+     */
+    private fun scanTargets(): List<String> {
+        val (ownIp, prefix) = wifiAddress() ?: return emptyList()
+        val effectivePrefix = prefix.coerceIn(MIN_SCAN_PREFIX, 30)
+        val mask = (-1 shl (32 - effectivePrefix))
+        val network = ownIp and mask
+        val broadcast = network or mask.inv()
+
+        val ownBlock = ownIp and (-1 shl 8)
+        return ((network + 1) until broadcast)
+            .filter { it != ownIp }
+            .sortedBy { if ((it and (-1 shl 8)) == ownBlock) 0 else 1 }
+            .map { intToIp(it) }
+    }
+
+    /** Telefoni IPv4 aadress (big-endian Int) ja prefiksi pikkus Wi-Fi võrgus. */
+    private fun wifiAddress(): Pair<Int, Int>? {
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        if (cm != null) {
+            @Suppress("DEPRECATION")
+            val networks = listOfNotNull(cm.activeNetwork) + cm.allNetworks.toList()
+            for (network in networks.distinct()) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) continue
+                val link = cm.getLinkProperties(network)?.linkAddresses
+                    ?.firstOrNull { it.address is Inet4Address } ?: continue
+                val bytes = link.address.address
+                val ip = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).int
+                return ip to link.prefixLength
+            }
+        }
+
+        // Varuvariant: vana WifiManager API, võrgumask teadmata -> /24
+        @Suppress("DEPRECATION")
+        val dhcp = (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)?.dhcpInfo
+        if (dhcp == null || dhcp.ipAddress == 0) return null
+        val ip = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(dhcp.ipAddress)
+            .order(ByteOrder.BIG_ENDIAN).getInt(0)
+        return ip to 24
+    }
+
+    private fun intToIp(ip: Int): String =
+        "${(ip ushr 24) and 0xFF}.${(ip ushr 16) and 0xFF}.${(ip ushr 8) and 0xFF}.${ip and 0xFF}"
+
+    private companion object {
+        // Kõige laiem võrk, mida täies ulatuses skaneerime (/22 = 1022 aadressi)
+        const val MIN_SCAN_PREFIX = 22
     }
 
     private fun isPortOpen(host: String, port: Int, timeout: Int): Boolean {
