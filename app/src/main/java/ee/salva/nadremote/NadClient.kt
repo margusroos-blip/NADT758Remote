@@ -1,6 +1,8 @@
 ﻿package com.nadremote.app
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -33,15 +35,40 @@ class NadClient {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    fun connect(ip: String) {
+    // Viimase NAD-ilt saabunud sõnumi aeg (ms); selle järgi kontrollime, kas ühendus on päriselt elus
+    private val _lastMessageAt = MutableStateFlow(0L)
+
+    @Volatile
+    private var currentIp: String = ""
+
+    private fun markConnected() {
+        if (_connectionStatus.value != ConnectionStatus.CONNECTED) {
+            _connectionStatus.value = ConnectionStatus.CONNECTED
+        }
+        if (_error.value != null) {
+            _error.value = null
+        }
+    }
+
+    /**
+     * @param force true korral luuakse uus ühendus ka siis, kui samale IP-le on
+     * ühendus juba olemas või pooleli. Muidu jäetakse käimasolev katse puutumata.
+     */
+    fun connect(ip: String, force: Boolean = false) {
         if (ip.isBlank()) return
         if (!DeviceAddressPolicy.isAllowedDeviceAddress(ip)) {
             _connectionStatus.value = ConnectionStatus.ERROR
             _error.value = "Only local network device addresses are allowed"
             return
         }
+        val status = _connectionStatus.value
+        if (!force && ws != null && ip == currentIp &&
+            (status == ConnectionStatus.CONNECTING || status == ConnectionStatus.CONNECTED)) {
+            return
+        }
         disconnect()
 
+        currentIp = ip
         _connectionStatus.value = ConnectionStatus.CONNECTING
         _error.value = null
 
@@ -53,25 +80,29 @@ class NadClient {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (webSocket !== ws) return
-                _connectionStatus.value = ConnectionStatus.CONNECTED
-                _error.value = null
+                markConnected()
                 queryAll()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (webSocket !== ws) return
+                markConnected()
+                _lastMessageAt.value = System.currentTimeMillis()
                 parseResponse(text)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 if (webSocket !== ws) return
+                markConnected()
+                _lastMessageAt.value = System.currentTimeMillis()
                 parseResponse(bytes.utf8())
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (webSocket !== ws) return
+                ws = null
                 _connectionStatus.value = ConnectionStatus.ERROR
-                _error.value = t.message ?: "Ãœhenduse viga"
+                _error.value = t.message ?: "Ühenduse viga"
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -89,13 +120,23 @@ class NadClient {
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
     }
 
+    // OkHttp võtab käsu järjekorda ka siis, kui socket alles avaneb või on juba surnud,
+    // seega saatmine ise ei tõesta ühendust. CONNECTED tuleb ainult onOpen/onMessage kaudu.
     fun send(cmd: String) {
-        val socket = ws ?: return
-        val sent = socket.send(cmd)
-        if (sent && _connectionStatus.value != ConnectionStatus.CONNECTED) {
-            _connectionStatus.value = ConnectionStatus.CONNECTED
-            _error.value = null
-        }
+        ws?.send(cmd)
+    }
+
+    /**
+     * Kontrollib, kas olemasolev ühendus päriselt vastab. Pärast pikka taustal olekut
+     * võib TCP olla surnud, kuigi olek on veel CONNECTED.
+     */
+    suspend fun verifyAlive(timeoutMs: Long = 3000): Boolean {
+        if (ws == null) return false
+        val before = _lastMessageAt.value
+        send("Main.Power?")
+        return withTimeoutOrNull(timeoutMs) {
+            _lastMessageAt.first { it > before }
+        } != null
     }
 
     private fun queryAll() {

@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -14,6 +16,9 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
     private val client = NadClient()
     private val discovery = NadDiscovery(app)
     private val blueOs = BlueOsClient()
+    private var reconnectJob: Job? = null
+    @Volatile
+    private var inForeground = false
 
     // State
     val nadState: StateFlow<NadState> = client.state
@@ -82,6 +87,57 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
                 blueOs.connect(ip)
             }
         }
+
+        // Kui töötav ühendus katkeb (nt Wi-Fi kadus hetkeks), proovi äpi esiplaanil olles
+        // uuesti. Ainult üleminek CONNECTED -> ERROR, et ebaõnnestunud katsed ei tekitaks
+        // lõputut kordustsüklit.
+        viewModelScope.launch {
+            var previous = connectionStatus.value
+            connectionStatus.collect { status ->
+                if (previous == ConnectionStatus.CONNECTED && status == ConnectionStatus.ERROR &&
+                    inForeground && reconnectJob?.isActive != true) {
+                    startReconnectWindow(force = false)
+                }
+                previous = status
+            }
+        }
+    }
+
+    /**
+     * Lühike reconnect-aknas tehtav retry-loop.
+     * See katab juhtumi, kus receiver ärkab standby'st mõned sekundid pärast appi avamist.
+     *
+     * @param verifyExisting kui olek on CONNECTED, kontrolli enne, kas ühendus päriselt vastab
+     * (pärast pikka taustal olekut võib socket olla surnud, kuigi olek pole veel muutunud).
+     */
+    private fun startReconnectWindow(force: Boolean = false, verifyExisting: Boolean = false) {
+        reconnectJob?.cancel()
+        reconnectJob = viewModelScope.launch {
+            val ip = prefs.savedIp.first()
+            val allowReconnect = force || prefs.autoReconnect.first()
+            if (!allowReconnect || ip.isBlank() || !DeviceAddressPolicy.isAllowedDeviceAddress(ip)) {
+                return@launch
+            }
+
+            if (verifyExisting && connectionStatus.value == ConnectionStatus.CONNECTED) {
+                if (client.verifyAlive()) return@launch
+                client.connect(ip, force = true)
+            }
+
+            repeat(12) {
+                when (connectionStatus.value) {
+                    ConnectionStatus.CONNECTED -> return@launch
+                    // Katse on pooleli - anna sellele aega, ära katkesta.
+                    // OkHttp connect timeout lõpetab rippuva katse ja olek läheb ERROR-iks.
+                    ConnectionStatus.CONNECTING -> Unit
+                    ConnectionStatus.DISCONNECTED, ConnectionStatus.ERROR -> client.connect(ip)
+                }
+                if (!blueOs.isPolling.value) {
+                    blueOs.connect(ip)
+                }
+                delay(2500)
+            }
+        }
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -90,48 +146,50 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
 
     fun connect(ip: String) {
         if (ip.isBlank() || !DeviceAddressPolicy.isAllowedDeviceAddress(ip)) return
+        reconnectJob?.cancel()
         viewModelScope.launch {
             prefs.saveDevice(ip)
         }
-        client.connect(ip)
+        client.connect(ip, force = true)
         blueOs.connect(ip)
     }
-    
+
     /**
      * Try to reconnect when app comes back to foreground.
      * Called from MainActivity onResume.
      */
     fun tryAutoReconnect() {
-        viewModelScope.launch {
-            val shouldReconnect = prefs.autoReconnect.first()
-            val ip = prefs.savedIp.first()
-            val status = connectionStatus.value
-            
-            if (shouldReconnect && ip.isNotBlank() &&
-                DeviceAddressPolicy.isAllowedDeviceAddress(ip) &&
-                (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.ERROR)) {
-                client.connect(ip)
-                blueOs.connect(ip)
-            }
-        }
+        inForeground = true
+        startReconnectWindow(force = false, verifyExisting = true)
     }
 
+    /** Called from MainActivity onPause. */
+    fun onAppPaused() {
+        inForeground = false
+    }
+
+    /** Loeb salvestatud IP otse DataStore'ist (savedIp StateFlow algväärtus on "" enne laadimist). */
+    suspend fun hasSavedDevice(): Boolean = prefs.savedIp.first().isNotBlank()
+
     fun disconnect() {
+        reconnectJob?.cancel()
         client.disconnect()
         blueOs.disconnect()
     }
 
     fun reconnect() {
+        reconnectJob?.cancel()
         viewModelScope.launch {
             val ip = prefs.savedIp.first()
             if (ip.isNotBlank() && DeviceAddressPolicy.isAllowedDeviceAddress(ip)) {
-                client.connect(ip)
+                client.connect(ip, force = true)
                 blueOs.connect(ip)
             }
         }
     }
 
     fun clearDevice() {
+        reconnectJob?.cancel()
         viewModelScope.launch {
             prefs.clear()
             client.disconnect()
@@ -205,7 +263,10 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
     // BluOS Controls
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
-    fun playPreset(presetId: Int) = blueOs.playPreset(presetId)
+    fun playPreset(presetId: Int) {
+        blueOs.playPreset(presetId)
+        startReconnectWindow(force = true)
+    }
     fun blueOsPlay() = blueOs.play()
     fun blueOsPause() = blueOs.pause()
     fun blueOsNext() = blueOs.next()
@@ -234,7 +295,11 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun playBrowseEntry(entry: BrowseEntry): Boolean = withContext(Dispatchers.IO) {
-        blueOs.playBrowseEntry(entry)
+        val played = blueOs.playBrowseEntry(entry)
+        if (played) {
+            startReconnectWindow(force = true)
+        }
+        played
     }
 
     // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -252,6 +317,7 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         super.onCleared()
+        reconnectJob?.cancel()
         client.disconnect()
         blueOs.close()
         discovery.close()

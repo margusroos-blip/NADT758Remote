@@ -58,8 +58,10 @@ fun NadRemoteApp(vm: NadViewModel) {
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                vm.tryAutoReconnect()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> vm.tryAutoReconnect()
+                Lifecycle.Event.ON_PAUSE -> vm.onAppPaused()
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -67,7 +69,8 @@ fun NadRemoteApp(vm: NadViewModel) {
     }
 
     LaunchedEffect(connectionStatus, savedIp) {
-        if (connectionStatus == ConnectionStatus.DISCONNECTED && savedIp.isBlank()) {
+        // savedIp on enne DataStore'i laadimist "", seega kontrolli päris väärtust
+        if (connectionStatus == ConnectionStatus.DISCONNECTED && savedIp.isBlank() && !vm.hasSavedDevice()) {
             showSettings = true
         }
     }
