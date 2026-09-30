@@ -1,5 +1,14 @@
 ﻿package com.nadremote.app
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -48,18 +57,41 @@ fun VolumeControl(
         // Volume display - smaller font for longer text like "VAIGISTATUD"
         val volumeText = if (isMuted) strings.muted else "$volume dB"
         val fontSize = if (isMuted && volumeText.length > 6) 48.sp else 64.sp
-        
-        Text(
-            volumeText,
-            style = MaterialTheme.typography.displayLarge.copy(
-                fontWeight = FontWeight.Light,
-                fontSize = fontSize
-            ),
-            color = if (isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+        val displayColor by animateColorAsState(
+            if (isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            stateTween(), label = "volumeText"
         )
+
+        // Number liugleb muutumisel üles/alla; ühelaiused numbrid (tnum), et tekst ei tõmbleks
+        AnimatedContent(
+            targetState = volumeText,
+            transitionSpec = {
+                val up = (targetState.substringBefore(" ").toIntOrNull() ?: 0) >
+                    (initialState.substringBefore(" ").toIntOrNull() ?: 0)
+                val dir = if (up) 1 else -1
+                (slideInVertically(tween(180)) { -dir * it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutVertically(tween(180)) { dir * it / 3 } + fadeOut(tween(120)))
+            },
+            label = "volumeNumber"
+        ) { text ->
+            Text(
+                text,
+                style = MaterialTheme.typography.displayLarge.copy(
+                    fontWeight = FontWeight.Light,
+                    fontSize = fontSize,
+                    fontFeatureSettings = "tnum"
+                ),
+                color = displayColor
+            )
+        }
         Spacer(Modifier.height(16.dp))
-        
+
         // Volume bar
+        val barFraction by animateFloatAsState(volumePercent, tween(160), label = "volumeBar")
+        val barColor by animateColorAsState(
+            if (isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            stateTween(), label = "volumeBarColor"
+        )
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.8f)
@@ -69,13 +101,10 @@ fun VolumeControl(
         ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(volumePercent)
+                    .fillMaxWidth(barFraction)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(4.dp))
-                    .background(
-                        if (isMuted) MaterialTheme.colorScheme.error 
-                        else MaterialTheme.colorScheme.primary
-                    )
+                    .background(barColor)
             )
         }
         
@@ -102,16 +131,16 @@ fun VolumeControl(
             horizontalArrangement = Arrangement.spacedBy(24.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Volume Down with long press repeat
+            // Volume Down with long press repeat. Iga samm annab kerge tiksu, mitte tugeva vibra.
             RepeatableButton(
-                onAction = { 
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onVolumeDown() 
+                onAction = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onVolumeDown()
                 }
             ) { interactionSource ->
                 FilledTonalIconButton(
                     onClick = { },
-                    modifier = Modifier.size(64.dp),
+                    modifier = Modifier.size(64.dp).pressScale(interactionSource),
                     interactionSource = interactionSource
                 ) {
                     Icon(
@@ -123,40 +152,42 @@ fun VolumeControl(
             }
 
             // Mute button
+            val muteInteraction = remember { MutableInteractionSource() }
+            val muteContainer by animateColorAsState(
+                if (isMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primaryContainer,
+                stateTween(), label = "muteContainer"
+            )
+            val muteTint by animateColorAsState(
+                if (isMuted) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimaryContainer,
+                stateTween(), label = "muteTint"
+            )
             FilledIconButton(
-                onClick = { 
+                onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onMuteToggle() 
+                    onMuteToggle()
                 },
-                modifier = Modifier.size(72.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = if (isMuted) 
-                        MaterialTheme.colorScheme.error 
-                    else 
-                        MaterialTheme.colorScheme.primaryContainer
-                )
+                modifier = Modifier.size(72.dp).pressScale(muteInteraction),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = muteContainer),
+                interactionSource = muteInteraction
             ) {
                 Icon(
                     if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeMute,
                     contentDescription = null,
                     modifier = Modifier.size(36.dp),
-                    tint = if (isMuted) 
-                        MaterialTheme.colorScheme.onError 
-                    else 
-                        MaterialTheme.colorScheme.onPrimaryContainer
+                    tint = muteTint
                 )
             }
 
             // Volume Up with long press repeat
             RepeatableButton(
-                onAction = { 
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onVolumeUp() 
+                onAction = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onVolumeUp()
                 }
             ) { interactionSource ->
                 FilledTonalIconButton(
                     onClick = { },
-                    modifier = Modifier.size(64.dp),
+                    modifier = Modifier.size(64.dp).pressScale(interactionSource),
                     interactionSource = interactionSource
                 ) {
                     Icon(

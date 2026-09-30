@@ -110,8 +110,10 @@ fun PresetSelector(
                 key(button.orderKey) {
                     val currentIndex by rememberUpdatedState(index)
                     val currentButton by rememberUpdatedState(button)
+                    val press = rememberPressState()
                     Box(
                         modifier = Modifier
+                            .pressScale(press.isPressed && draggingIndex == -1)
                             .zIndex(if (draggingIndex == currentIndex) 1f else 0f)
                             .offset {
                                 IntOffset(
@@ -171,6 +173,14 @@ fun PresetSelector(
                             }
                             .pointerInput(Unit) {
                                 detectTapGestures(
+                                    onPress = {
+                                        press.isPressed = true
+                                        try {
+                                            tryAwaitRelease()
+                                        } finally {
+                                            press.isPressed = false
+                                        }
+                                    },
                                     onTap = {
                                         if (draggingIndex != -1) return@detectTapGestures
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -249,7 +259,8 @@ fun SpotifyButton(size: Dp = 76.dp) {
         modifier = Modifier.size(size),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 0.dp
+        tonalElevation = 0.dp,
+        border = hairlineBorder()
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(6.dp),
@@ -280,7 +291,8 @@ fun TuneInButton(size: Dp = 76.dp) {
         modifier = Modifier.size(size),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 0.dp
+        tonalElevation = 0.dp,
+        border = hairlineBorder()
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(6.dp),
@@ -319,7 +331,8 @@ fun PresetButton(
         modifier = Modifier.size(size),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 0.dp
+        tonalElevation = 0.dp,
+        border = hairlineBorder()
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(6.dp),
@@ -368,7 +381,8 @@ fun MorePresetsButton(
         modifier = Modifier.size(76.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-        tonalElevation = 0.dp
+        tonalElevation = 0.dp,
+        border = hairlineBorder()
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(6.dp),

@@ -1,7 +1,10 @@
 ﻿package com.nadremote.app
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -10,9 +13,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,6 +30,7 @@ fun NowPlayingCard(
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
+    onOpenSpotifyApp: (() -> Unit)? = null,
     embedded: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -38,39 +44,74 @@ fun NowPlayingCard(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Album art / station logo
-            if (nowPlaying.imageUrl.isNotBlank()) {
-                AsyncImage(
-                    model = nowPlaying.imageUrl,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                    contentScale = ContentScale.Crop
-                )
-                Spacer(Modifier.width(12.dp))
-            } else {
-                // Default icon
-                Surface(
-                    modifier = Modifier.size(56.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            when {
-                                nowPlaying.isSpotify -> Icons.Default.MusicNote
-                                nowPlaying.isRadio -> Icons.Default.Radio
-                                else -> Icons.Default.MusicNote
-                            },
-                            contentDescription = null,
-                            modifier = Modifier.size(28.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+            // Album art / station logo. Spotify puhul avab pildile vajutus telefonis Spotify äpi
+            // (otsing, playlistid); nurgas väike logo annab sellest märku.
+            val openSpotify = onOpenSpotifyApp?.takeIf { nowPlaying.isSpotify }
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .then(
+                        if (openSpotify != null) {
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClickLabel = "Spotify") {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    openSpotify()
+                                }
+                        } else Modifier
+                    )
+            ) {
+                if (nowPlaying.imageUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = nowPlaying.imageUrl,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    // Default icon
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                when {
+                                    nowPlaying.isSpotify -> Icons.Default.MusicNote
+                                    nowPlaying.isRadio -> Icons.Default.Radio
+                                    else -> Icons.Default.MusicNote
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
-                Spacer(Modifier.width(12.dp))
+
+                if (openSpotify != null) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(3.dp)
+                            .size(18.dp),
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.72f)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Image(
+                                painter = painterResource(id = R.drawable.ic_spotify_official_green),
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
+                    }
+                }
             }
+            Spacer(Modifier.width(12.dp))
             
             // Title, subtitle, album
             Column(modifier = Modifier.weight(1f)) {

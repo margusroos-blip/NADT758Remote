@@ -1,5 +1,9 @@
 ﻿package com.nadremote.app
 
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -130,6 +134,7 @@ fun NadRemoteApp(vm: NadViewModel) {
                         }
                     }
                 },
+                onOpenSpotifyApp = { openSpotifyApp(context) },
                 quickButtonOrder = quickButtonOrder,
                 onQuickButtonOrderChange = vm::setQuickButtonOrder,
                 onBrowseTuneIn = vm::browseTuneIn,
@@ -145,3 +150,21 @@ fun NadRemoteApp(vm: NadViewModel) {
 }
 
 
+
+/**
+ * Avab telefonis Spotify äpi (otsing, playlistid). Kui äppi pole, avab Play poe lehe.
+ * NAD Remote'i naaseb tagasi-nupu või äpivahetuse žestiga.
+ */
+private fun openSpotifyApp(context: Context) {
+    val launch = context.packageManager.getLaunchIntentForPackage(SPOTIFY_PACKAGE)
+        ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$SPOTIFY_PACKAGE"))
+    try {
+        context.startActivity(launch)
+    } catch (_: ActivityNotFoundException) {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$SPOTIFY_PACKAGE"))
+        )
+    }
+}
+
+private const val SPOTIFY_PACKAGE = "com.spotify.music"

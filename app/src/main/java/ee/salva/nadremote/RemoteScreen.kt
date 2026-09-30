@@ -1,6 +1,10 @@
 ﻿package com.nadremote.app
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -10,6 +14,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -35,6 +43,7 @@ fun RemoteScreen(
     onSkipPrevious: () -> Unit,
     onPresetSelect: (Int) -> Unit,
     onOpenSpotify: () -> Unit,
+    onOpenSpotifyApp: () -> Unit,
     quickButtonOrder: List<String>,
     onQuickButtonOrderChange: (List<String>) -> Unit,
     onBrowseTuneIn: suspend (String?) -> List<BrowseEntry>,
@@ -48,7 +57,16 @@ fun RemoteScreen(
                         nowPlaying.service.isNotBlank()
     
     val hasNowPlaying = isBluOsSource && nowPlaying.hasContent
-    
+
+    // BluOS paneeli taustale väga nõrk kaanepildi toon; vahetub sujuvalt iga looga
+    val artworkColor = rememberArtworkColor(if (hasNowPlaying) nowPlaying.imageUrl else "")
+    val panelBase = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+    val panelColor by animateColorAsState(
+        targetValue = artworkColor?.copy(alpha = 0.10f)?.compositeOver(panelBase) ?: panelBase,
+        animationSpec = tween(700),
+        label = "panelTint"
+    )
+
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -71,8 +89,8 @@ fun RemoteScreen(
                     .fillMaxWidth()
                     .padding(top = 14.dp),
                 shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
-                tonalElevation = 2.dp
+                color = panelColor,
+                border = hairlineBorder(0.06f)
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
@@ -85,6 +103,7 @@ fun RemoteScreen(
                         onPlayPause = onPlayPause,
                         onSkipNext = onSkipNext,
                         onSkipPrevious = onSkipPrevious,
+                        onOpenSpotifyApp = onOpenSpotifyApp,
                         embedded = true
                     )
                 }
@@ -119,21 +138,55 @@ fun RemoteScreen(
 @Composable
 fun PowerButton(isOn: Boolean, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
-    Surface(
-        onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() },
-        modifier = Modifier.size(80.dp),
-        shape = CircleShape,
-        color = if (isOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = if (isOn) 8.dp else 0.dp,
-        shadowElevation = if (isOn) 4.dp else 0.dp
+    val interaction = remember { MutableInteractionSource() }
+    val colors = MaterialTheme.colorScheme
+    val container by animateColorAsState(
+        if (isOn) colors.primary else colors.surfaceVariant, stateTween(), label = "powerContainer"
+    )
+    val iconTint by animateColorAsState(
+        if (isOn) colors.onPrimary else colors.onSurfaceVariant, stateTween(), label = "powerIcon"
+    )
+    // Kuma süttib sisselülitamisel korra sujuvalt ja jääb paigale (ei "hinga")
+    val haloAlpha by animateFloatAsState(
+        if (isOn) 0.16f else 0f, tween(600), label = "powerHalo"
+    )
+    val haloColor = colors.primary
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(80.dp)
+            .drawBehind {
+                if (haloAlpha > 0f) {
+                    val radius = size.minDimension * 0.95f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(haloColor.copy(alpha = haloAlpha), Color.Transparent),
+                            center = center,
+                            radius = radius
+                        ),
+                        radius = radius
+                    )
+                }
+            }
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            Icon(
-                Icons.Default.PowerSettingsNew,
-                contentDescription = null,
-                modifier = Modifier.size(40.dp),
-                tint = if (isOn) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Surface(
+            onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() },
+            modifier = Modifier.size(80.dp).pressScale(interaction),
+            shape = CircleShape,
+            color = container,
+            border = if (isOn) null else hairlineBorder(),
+            shadowElevation = if (isOn) 4.dp else 0.dp,
+            interactionSource = interaction
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    Icons.Default.PowerSettingsNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp),
+                    tint = iconTint
+                )
+            }
         }
     }
 }
@@ -191,12 +244,28 @@ fun SourceSelector(
 @Composable
 fun SourceButton(name: String, isSelected: Boolean, onClick: () -> Unit) {
     val icon = getSourceIcon(name)
+    val interaction = remember { MutableInteractionSource() }
+    val colors = MaterialTheme.colorScheme
+    val container by animateColorAsState(
+        if (isSelected) colors.primaryContainer else colors.surfaceVariant, stateTween(), label = "sourceContainer"
+    )
+    val iconTint by animateColorAsState(
+        if (isSelected) colors.primary else colors.onSurfaceVariant, stateTween(), label = "sourceIcon"
+    )
+    val labelColor by animateColorAsState(
+        if (isSelected) colors.onPrimaryContainer else colors.onSurfaceVariant, stateTween(), label = "sourceLabel"
+    )
+    val borderColor by animateColorAsState(
+        if (isSelected) colors.primary.copy(alpha = 0.45f) else colors.onSurface.copy(alpha = 0.08f),
+        stateTween(), label = "sourceBorder"
+    )
     Surface(
         onClick = onClick,
-        modifier = Modifier.size(76.dp),
+        modifier = Modifier.size(76.dp).pressScale(interaction),
         shape = RoundedCornerShape(16.dp),
-        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = if (isSelected) 4.dp else 0.dp
+        color = container,
+        border = BorderStroke(1.dp, borderColor),
+        interactionSource = interaction
     ) {
         Column(
             modifier = Modifier.fillMaxSize().padding(8.dp),
@@ -207,14 +276,14 @@ fun SourceButton(name: String, isSelected: Boolean, onClick: () -> Unit) {
                 icon,
                 contentDescription = name,
                 modifier = Modifier.size(24.dp),
-                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                tint = iconTint
             )
             Spacer(Modifier.height(4.dp))
             Text(
                 name,
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = labelColor,
                 maxLines = 1,
                 textAlign = TextAlign.Center
             )

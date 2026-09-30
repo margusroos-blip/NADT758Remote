@@ -96,6 +96,7 @@ dependencies {
 
     // Image loading
     implementation("io.coil-kt:coil-compose:2.5.0")
+    implementation("androidx.palette:palette-ktx:1.0.0")
 
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.0.0")
