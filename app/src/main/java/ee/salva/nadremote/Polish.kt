@@ -8,7 +8,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -106,3 +110,21 @@ class PressState {
 
 @Composable
 fun rememberPressState() = remember { PressState() }
+
+/** Väike vaikne silt voo kvaliteedi jaoks, nt "AAC · 192 kbps" (TuneIn-i leht, mini-player). */
+@Composable
+fun QualityBadge(label: String) {
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = Color.Transparent,
+        border = hairlineBorder(0.18f)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+        )
+    }
+}

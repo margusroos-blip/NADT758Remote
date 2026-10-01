@@ -10,11 +10,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.Layout
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -31,12 +35,15 @@ fun RemoteScreen(
     nadState: NadState,
     displaySources: Map<Int, String>,
     nowPlaying: NowPlaying,
+    pendingPlay: PendingPlay?,
+    spotifyStuck: Boolean,
     presets: List<Preset>,
     strings: StringResources,
     onPowerToggle: () -> Unit,
     onVolumeUp: () -> Unit,
     onVolumeDown: () -> Unit,
     onMuteToggle: () -> Unit,
+    activeSourceId: Int,
     onSourceSelect: (Int) -> Unit,
     onPlayPause: () -> Unit,
     onSkipNext: () -> Unit,
@@ -46,8 +53,14 @@ fun RemoteScreen(
     onOpenSpotifyApp: () -> Unit,
     quickButtonOrder: List<String>,
     onQuickButtonOrderChange: (List<String>) -> Unit,
+    presetActions: PresetActions?,
     onBrowseTuneIn: suspend (String?) -> List<BrowseEntry>,
-    onPlayBrowseEntry: suspend (BrowseEntry) -> Boolean
+    onPlayBrowseEntry: suspend (BrowseEntry) -> Boolean,
+    onSearchTuneIn: suspend (String) -> List<BrowseEntry>,
+    onLocalRadio: suspend () -> List<BrowseEntry>,
+    onTuneInQuality: suspend (String) -> StreamQuality?,
+    radioSheetRequested: Boolean,
+    onRadioSheetShown: () -> Unit
 ) {
     // Check if BluOS is active
     val currentSourceName = nadState.sources[nadState.sourceId]?.lowercase() ?: ""
@@ -56,10 +69,72 @@ fun RemoteScreen(
                         currentSourceName.contains("bluesound") ||
                         nowPlaying.service.isNotBlank()
     
-    val hasNowPlaying = isBluOsSource && nowPlaying.hasContent
+    val hasNowPlaying = isBluOsSource && (nowPlaying.hasContent || pendingPlay != null)
 
-    // BluOS paneeli taustale väga nõrk kaanepildi toon; vahetub sujuvalt iga looga
-    val artworkColor = rememberArtworkColor(if (hasNowPlaying) nowPlaying.imageUrl else "")
+    val panelMode = when (activeSourceId) {
+        VirtualSource.RADIO -> PanelMode.RADIO
+        VirtualSource.SPOTIFY -> PanelMode.SPOTIFY
+        else -> if (isBluOsSource && (hasNowPlaying || presets.isNotEmpty())) PanelMode.BLUOS else PanelMode.NONE
+    }
+
+    // Lemmikud kasutaja järjekorras (sama mis kiirnuppudel), jagatud raadio- ja Spotify lemmikuteks
+    val orderedPresets = remember(presets, quickButtonOrder) {
+        presets.sortedBy { p ->
+            quickButtonOrder.indexOf("preset:${p.id}").let { if (it < 0) Int.MAX_VALUE else it }
+        }
+    }
+    val radioPresets = remember(orderedPresets) { orderedPresets.filter { !it.isSpotifyPreset } }
+    val spotifyPresets = remember(orderedPresets) { orderedPresets.filter { it.isSpotifyPreset } }
+
+    // Raadio otsinguleht: avaneb Raadio playeri 🔍 nupust või kui Raadio sisendil pole veel jaama
+    val haptic = LocalHapticFeedback.current
+    var showRadioSheet by remember { mutableStateOf(false) }
+    LaunchedEffect(radioSheetRequested) {
+        if (radioSheetRequested) {
+            showRadioSheet = true
+            onRadioSheetShown()
+        }
+    }
+    // Raadio lemmikute haldus (Raadio playeri ✎ nupust)
+    var showRadioFavorites by remember { mutableStateOf(false) }
+    if (showRadioFavorites) {
+        RadioFavoritesSheet(
+            radioPresets = radioPresets,
+            allPresets = presets,
+            quickButtonOrder = quickButtonOrder,
+            strings = strings,
+            presetActions = presetActions,
+            onOrderChange = onQuickButtonOrderChange,
+            onSelect = onPresetSelect,
+            onSearchStations = { showRadioSheet = true },
+            onDismiss = { showRadioFavorites = false }
+        )
+    }
+
+    if (showRadioSheet) {
+        TuneInBrowseSheet(
+            presets = presets,
+            strings = strings,
+            onAddStation = presetActions?.onAddStation,
+            onRemovePreset = presetActions?.onDelete,
+            onDismiss = { showRadioSheet = false },
+            onBrowse = onBrowseTuneIn,
+            onSearch = onSearchTuneIn,
+            onLocalRadio = onLocalRadio,
+            onQuality = onTuneInQuality,
+            onPlayEntry = { entry ->
+                val ok = onPlayBrowseEntry(entry)
+                if (ok) showRadioSheet = false
+                ok
+            },
+            onPulseHaptic = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+        )
+    }
+
+    // Paneeli taustale väga nõrk kaanepildi toon; vahetub sujuvalt iga looga
+    val artworkColor = rememberArtworkColor(
+        if (panelMode != PanelMode.NONE && nowPlaying.hasContent && pendingPlay == null) nowPlaying.imageUrl else ""
+    )
     val panelBase = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
     val panelColor by animateColorAsState(
         targetValue = artworkColor?.copy(alpha = 0.10f)?.compositeOver(panelBase) ?: panelBase,
@@ -67,20 +142,27 @@ fun RemoteScreen(
         label = "panelTint"
     )
 
-    Column(
+    // Helitugevus on äpi põhjus: see mõõdetakse ESIMESENA ja saab alati täissuuruse.
+    // Ülemine osa (toide, sisendid, player) saab ülejäänud ruumi ja keritakse vajadusel —
+    // ükski player ei tohi helitugevuse nuppe kokku suruda.
+    VolumeFirstLayout(
         modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+        top = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
         PowerButton(nadState.power, onPowerToggle)
         Spacer(Modifier.height(14.dp))
         
         if (displaySources.isNotEmpty()) {
-            SourceSelector(displaySources, nadState.sourceId, strings, onSourceSelect)
+            SourceSelector(displaySources, activeSourceId, strings, onSourceSelect)
         }
         
-        // BluOS Hub - üks suur paneel, ilma topelt infota
+        // Playeri kast: sisu sõltub sisendist. Raadio ja Spotify (virtuaalsed sisendid)
+        // saavad oma playeri; BluOS sisend jääb tavalise mini-playeri + kiirnuppudega.
         AnimatedVisibility(
-            visible = isBluOsSource && (hasNowPlaying || presets.isNotEmpty()),
+            visible = panelMode != PanelMode.NONE,
             enter = fadeIn() + slideInVertically(initialOffsetY = { it / 4 }),
             exit = fadeOut() + slideOutVertically(targetOffsetY = { it / 4 })
         ) {
@@ -93,42 +175,93 @@ fun RemoteScreen(
                 border = hairlineBorder(0.06f)
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 10.dp)
+                        .animateContentSize(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (hasNowPlaying) {
-                    NowPlayingCard(
-                        nowPlaying = nowPlaying,
-                        strings = strings,
-                        onPlayPause = onPlayPause,
-                        onSkipNext = onSkipNext,
-                        onSkipPrevious = onSkipPrevious,
-                        onOpenSpotifyApp = onOpenSpotifyApp,
-                        embedded = true
-                    )
-                }
+                    AnimatedContent(
+                        targetState = panelMode,
+                        transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(160)) },
+                        label = "panelMode"
+                    ) { mode ->
+                        when (mode) {
+                            PanelMode.RADIO -> RadioPlayer(
+                                nowPlaying = nowPlaying,
+                                pending = pendingPlay,
+                                radioPresets = radioPresets,
+                                strings = strings,
+                                onPresetSelect = onPresetSelect,
+                                onSearch = { showRadioSheet = true },
+                                onEditFavorites = { showRadioFavorites = true }
+                            )
 
-                    if (presets.isNotEmpty()) {
-                        PresetSelector(
-                            presets = presets,
-                            strings = strings,
-                            onSelect = onPresetSelect,
-                            onOpenSpotify = onOpenSpotify,
-                            onBrowseTuneIn = onBrowseTuneIn,
-                            onPlayBrowseEntry = onPlayBrowseEntry,
-                            quickButtonOrder = quickButtonOrder,
-                            onQuickButtonOrderChange = onQuickButtonOrderChange,
-                            showTitle = false
-                        )
+                            PanelMode.SPOTIFY -> SpotifyPlayer(
+                                nowPlaying = nowPlaying,
+                                pending = pendingPlay,
+                                spotifyPresets = spotifyPresets,
+                                strings = strings,
+                                onPlayPause = onPlayPause,
+                                onSkipNext = onSkipNext,
+                                onSkipPrevious = onSkipPrevious,
+                                onPresetSelect = onPresetSelect,
+                                onOpenSpotifyApp = onOpenSpotifyApp
+                            )
+
+                            PanelMode.BLUOS -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (hasNowPlaying) {
+                                    NowPlayingCard(
+                                        nowPlaying = nowPlaying,
+                                        strings = strings,
+                                        onPlayPause = onPlayPause,
+                                        onSkipNext = onSkipNext,
+                                        onSkipPrevious = onSkipPrevious,
+                                        onOpenSpotifyApp = onOpenSpotifyApp,
+                                        pending = pendingPlay,
+                                        embedded = true
+                                    )
+                                }
+                                if (presets.isNotEmpty()) {
+                                    PresetSelector(
+                                        presets = presets,
+                                        strings = strings,
+                                        onSelect = onPresetSelect,
+                                        onOpenSpotify = onOpenSpotify,
+                                        onBrowseTuneIn = onBrowseTuneIn,
+                                        onPlayBrowseEntry = onPlayBrowseEntry,
+                                        onSearchTuneIn = onSearchTuneIn,
+                                        onLocalRadio = onLocalRadio,
+                                        onTuneInQuality = onTuneInQuality,
+                                        quickButtonOrder = quickButtonOrder,
+                                        onQuickButtonOrderChange = onQuickButtonOrderChange,
+                                        presetActions = presetActions,
+                                        showTitle = false
+                                    )
+                                }
+                            }
+
+                            PanelMode.NONE -> Unit
+                        }
+                    }
+
+                    // Nähtav ainult siis, kui Spotify on kinni "connecting" olekus (heli ei tule)
+                    AnimatedVisibility(
+                        visible = spotifyStuck,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        SpotifyStuckHint(strings = strings, onOpenSpotifyApp = onOpenSpotifyApp)
                     }
                 }
             }
         }
 
-        Spacer(Modifier.weight(1f))
-        VolumeControl(nadState.volume, nadState.mute, strings, onVolumeUp, onVolumeDown, onMuteToggle)
-        Spacer(Modifier.weight(1f))
-    }
+            }
+        },
+        volume = {
+            VolumeControl(nadState.volume, nadState.mute, strings, onVolumeUp, onVolumeDown, onMuteToggle)
+        }
+    )
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -298,7 +431,8 @@ fun getSourceIcon(name: String): ImageVector {
         n.contains("stream") || n.contains("bluos") -> Icons.Default.Wifi
         n.contains("bluetooth") || n.contains("bt") -> Icons.Default.Bluetooth
         n.contains("cd") || n.contains("disc") -> Icons.Default.Album
-        n.contains("tuner") || n.contains("radio") || n.contains("fm") -> Icons.Default.Radio
+        n.contains("spotify") -> Icons.Default.LibraryMusic
+        n.contains("tuner") || n.contains("radio") || n.contains("raadio") || n.contains("fm") -> Icons.Rounded.CellTower
         n.contains("phono") || n.contains("vinyl") -> Icons.Default.GraphicEq
         n.contains("aux") -> Icons.Default.Cable
         n.contains("usb") -> Icons.Default.Usb
@@ -309,3 +443,69 @@ fun getSourceIcon(name: String): ImageVector {
 }
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SPOTIFY VIHJE: Spotify äpp näitab mängimist, aga NAD ei saa heli kätte.
+// Aitab ainult seadme vahetus Spotify äpis (telefon -> NAD).
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SpotifyStuckHint(strings: StringResources, onOpenSpotifyApp: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                strings.spotifyNoAudio,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onOpenSpotifyApp) {
+                Text(strings.openSpotifyApp, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+/** Mida playeri kastis näidata. */
+enum class PanelMode { NONE, BLUOS, RADIO, SPOTIFY }
+
+/**
+ * Paigutus, kus helitugevuse plokk mõõdetakse esimesena ja saab alati oma täissuuruse.
+ * Ülemine osa saab ülejäänud kõrguse; helitugevus paigutatakse ülejäänud vaba ruumi keskele
+ * (sama välimus nagu varem Spacer(weight) / Volume / Spacer(weight)).
+ */
+@Composable
+private fun VolumeFirstLayout(
+    modifier: Modifier = Modifier,
+    top: @Composable () -> Unit,
+    volume: @Composable () -> Unit
+) {
+    Layout(contents = listOf(top, volume), modifier = modifier) { (topMeasurables, volumeMeasurables), constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val volumePlaceable = volumeMeasurables.first().measure(loose)
+        val topMaxHeight = (constraints.maxHeight - volumePlaceable.height).coerceAtLeast(0)
+        val topPlaceable = topMeasurables.first().measure(loose.copy(maxHeight = topMaxHeight))
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        layout(width, height) {
+            topPlaceable.placeRelative((width - topPlaceable.width) / 2, 0)
+            val free = (height - topPlaceable.height - volumePlaceable.height).coerceAtLeast(0)
+            volumePlaceable.placeRelative((width - volumePlaceable.width) / 2, topPlaceable.height + free / 2)
+        }
+    }
+}

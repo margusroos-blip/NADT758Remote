@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.*
@@ -22,6 +23,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -37,11 +40,7 @@ fun SettingsSheet(
 ) {
     val strings by vm.strings.collectAsState()
     val uriHandler = LocalUriHandler.current
-    val savedIp by vm.savedIp.collectAsState()
-    val devices by vm.devices.collectAsState()
-    val isScanning by vm.isScanning.collectAsState()
     val connectionStatus by vm.connectionStatus.collectAsState()
-    val error by vm.error.collectAsState()
     val currentTheme by vm.theme.collectAsState()
     val currentLanguage by vm.language.collectAsState()
     val nadState by vm.nadState.collectAsState()
@@ -49,10 +48,8 @@ fun SettingsSheet(
     val autoReconnect by vm.autoReconnect.collectAsState()
 
     var showAdvanced by remember { mutableStateOf(false) }
-    var showConnectionTools by remember { mutableStateOf(false) }
     var showFavoritePicker by remember { mutableStateOf(false) }
     var languageExpanded by remember { mutableStateOf(false) }
-    var ipInput by remember(savedIp) { mutableStateOf(savedIp) }
 
     var selectedFavorites by remember(favoriteSources) { mutableStateOf(favoriteSources.toSet()) }
 
@@ -72,6 +69,10 @@ fun SettingsSheet(
                 SettingsTitleRow(strings = strings, model = nadState.model.ifBlank { "NAD" })
             }
 
+            item {
+                DeviceSection(vm = vm, strings = strings)
+            }
+
             if (connectionStatus == ConnectionStatus.CONNECTED && nadState.enabledSources.isNotEmpty()) {
                 item {
                     SettingsCard {
@@ -83,7 +84,13 @@ fun SettingsSheet(
 
                         ExpandableSelector(
                             title = if (favoriteSources.isEmpty()) strings.selectUpTo4
-                            else favoriteSources.mapNotNull { nadState.sources[it] }.joinToString(", "),
+                            else favoriteSources.mapNotNull { id ->
+                                when (id) {
+                                    VirtualSource.RADIO -> strings.radio
+                                    VirtualSource.SPOTIFY -> "Spotify"
+                                    else -> nadState.sources[id]
+                                }
+                            }.joinToString(", "),
                             expanded = showFavoritePicker,
                             onClick = { showFavoritePicker = !showFavoritePicker }
                         )
@@ -93,8 +100,10 @@ fun SettingsSheet(
                             enter = expandVertically() + fadeIn(),
                             exit = shrinkVertically() + fadeOut()
                         ) {
-                            val sourceEntries = remember(nadState.enabledSources) {
-                                nadState.enabledSources.toList().sortedBy { it.first }
+                            // NAD-i füüsilised sisendid + äpi virtuaalsed (Raadio, Spotify)
+                            val sourceEntries = remember(nadState.enabledSources, strings) {
+                                nadState.enabledSources.toList().sortedBy { it.first } +
+                                    listOf(VirtualSource.RADIO to strings.radio, VirtualSource.SPOTIFY to "Spotify")
                             }
 
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -159,6 +168,12 @@ fun SettingsSheet(
                                         }
                                     }
                                 }
+
+                                Text(
+                                    strings.virtualSourceHint,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -286,113 +301,6 @@ fun SettingsSheet(
                                     Switch(checked = autoReconnect, onCheckedChange = { vm.setAutoReconnect(it) })
                                 }
                             }
-
-                            ExpandableSelector(
-                                title = strings.deviceConnection,
-                                expanded = showConnectionTools,
-                                onClick = { showConnectionTools = !showConnectionTools }
-                            )
-
-                            AnimatedVisibility(
-                                visible = showConnectionTools,
-                                enter = expandVertically() + fadeIn(),
-                                exit = shrinkVertically() + fadeOut()
-                            ) {
-                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    DeviceConnectionCard(
-                                        connectionStatus = connectionStatus,
-                                        deviceName = nadState.model.ifBlank { "NAD" },
-                                        savedIp = savedIp,
-                                        error = error,
-                                        strings = strings,
-                                        onConnect = { vm.reconnect() },
-                                        onDisconnect = { vm.disconnect() },
-                                        onScan = { vm.scanSubnet() }
-                                    )
-
-                                    if (devices.isNotEmpty() && connectionStatus != ConnectionStatus.CONNECTED) {
-                                        Text(
-                                            strings.discoveredDevices,
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-
-                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            devices.forEach { device ->
-                                                Surface(
-                                                    onClick = { vm.connect(device.ip); onDismiss() },
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    shape = RoundedCornerShape(14.dp),
-                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                                ) {
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Column(modifier = Modifier.weight(1f)) {
-                                                            Text(device.name.ifBlank { "NAD" }, fontWeight = FontWeight.Medium)
-                                                            Text(
-                                                                device.ip,
-                                                                style = MaterialTheme.typography.bodySmall,
-                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                            )
-                                                        }
-                                                        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    OutlinedTextField(
-                                        value = ipInput,
-                                        onValueChange = { ipInput = it.trim() },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        label = { Text(strings.deviceIp) },
-                                        placeholder = { Text(strings.deviceIpPlaceholder) },
-                                        singleLine = true,
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                                        keyboardActions = KeyboardActions(onDone = { if (ipInput.isNotBlank()) vm.connect(ipInput) }),
-                                        trailingIcon = {
-                                            if (ipInput.isNotBlank()) {
-                                                IconButton(onClick = { ipInput = "" }) { Icon(Icons.Default.Clear, null) }
-                                            }
-                                        },
-                                        shape = RoundedCornerShape(14.dp)
-                                    )
-
-                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Button(
-                                            onClick = { vm.connect(ipInput); onDismiss() },
-                                            modifier = Modifier.weight(1f),
-                                            enabled = ipInput.isNotBlank()
-                                        ) {
-                                            Icon(Icons.Default.Link, null, Modifier.size(18.dp))
-                                            Spacer(Modifier.width(8.dp))
-                                            Text(strings.connect)
-                                        }
-
-                                        OutlinedButton(onClick = { vm.scanSubnet() }, modifier = Modifier.weight(1f)) {
-                                            if (isScanning) {
-                                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                            } else {
-                                                Icon(Icons.Default.Search, null, Modifier.size(18.dp))
-                                            }
-                                            Spacer(Modifier.width(8.dp))
-                                            Text(if (isScanning) strings.scanning else strings.scanNetwork)
-                                        }
-                                    }
-
-                                    TextButton(onClick = { vm.clearDevice(); ipInput = "" }, modifier = Modifier.fillMaxWidth()) {
-                                        Icon(Icons.Default.Delete, null)
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(strings.clearSavedDevice)
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -490,113 +398,6 @@ private fun ExpandableSelector(
     }
 }
 
-@Composable
-fun DeviceConnectionCard(
-    connectionStatus: ConnectionStatus,
-    deviceName: String,
-    savedIp: String,
-    error: String?,
-    strings: StringResources,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-    onScan: () -> Unit
-) {
-    val containerColor = when (connectionStatus) {
-        ConnectionStatus.CONNECTED -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-        ConnectionStatus.ERROR -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
-        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    }
-
-    Surface(shape = RoundedCornerShape(16.dp), color = containerColor) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        when (connectionStatus) {
-                            ConnectionStatus.CONNECTED -> Icons.Default.CheckCircle
-                            ConnectionStatus.CONNECTING -> Icons.Default.Sync
-                            ConnectionStatus.ERROR -> Icons.Default.Error
-                            ConnectionStatus.DISCONNECTED -> Icons.Default.WifiOff
-                        },
-                        null,
-                        modifier = Modifier.size(30.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column {
-                        when (connectionStatus) {
-                            ConnectionStatus.CONNECTED -> {
-                                Text(deviceName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text(strings.connected, style = MaterialTheme.typography.bodySmall)
-                            }
-
-                            ConnectionStatus.CONNECTING -> {
-                                Text(strings.connecting, style = MaterialTheme.typography.titleMedium)
-                            }
-
-                            ConnectionStatus.ERROR -> {
-                                Text(strings.error, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                if (!error.isNullOrBlank()) {
-                                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-                                }
-                            }
-
-                            ConnectionStatus.DISCONNECTED -> {
-                                Text(strings.disconnected, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text(strings.tapToConnect, style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                    }
-                }
-
-                if (connectionStatus == ConnectionStatus.CONNECTING) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                }
-            }
-
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (connectionStatus) {
-                    ConnectionStatus.CONNECTED -> {
-                        OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Default.LinkOff, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(strings.disconnect)
-                        }
-                    }
-
-                    ConnectionStatus.DISCONNECTED, ConnectionStatus.ERROR -> {
-                        if (savedIp.isNotBlank()) {
-                            Button(onClick = onConnect, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(strings.connect)
-                            }
-                        }
-
-                        OutlinedButton(
-                            onClick = onScan,
-                            modifier = if (savedIp.isBlank()) Modifier.fillMaxWidth() else Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Search, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(strings.scanNetwork)
-                        }
-                    }
-
-                    ConnectionStatus.CONNECTING -> Unit
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun FavoriteSourceCard(
@@ -697,6 +498,177 @@ fun ThemeOption(
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                 color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEADE: üks lihtne kaart. Kasutaja näeb NAD-i nime ja olekut; IP ainult väikselt.
+// Kui ühendust pole, otsitakse NAD ise üles; käsitsi IP on peidetud lingi all.
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun DeviceSection(
+    vm: NadViewModel,
+    strings: StringResources
+) {
+    val status by vm.connectionStatus.collectAsState()
+    val savedIp by vm.savedIp.collectAsState()
+    val savedName by vm.savedName.collectAsState()
+    val nadState by vm.nadState.collectAsState()
+    val devices by vm.devices.collectAsState()
+    val isScanning by vm.isScanning.collectAsState()
+
+    var showManual by remember { mutableStateOf(false) }
+    var ipInput by remember(savedIp) { mutableStateOf(savedIp) }
+
+    // Kui ühendust pole, hakka kohe otsima — kasutaja ei pea midagi vajutama
+    LaunchedEffect(Unit) {
+        if (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.ERROR) {
+            vm.findDevices()
+        }
+    }
+
+    val isConnected = status == ConnectionStatus.CONNECTED
+    val deviceName = savedName.ifBlank { nadState.model.ifBlank { "NAD" } }
+    val title = when {
+        isConnected -> deviceName
+        status == ConnectionStatus.CONNECTING -> deviceName
+        isScanning -> strings.searchingNad
+        else -> strings.nadNotFound
+    }
+    val subtitle = when {
+        isConnected -> "${strings.connected} · $savedIp"
+        status == ConnectionStatus.CONNECTING -> strings.connecting
+        else -> strings.sameWifiHint
+    }
+    val dotColor = when {
+        isConnected -> Color(0xFF4CAF50)
+        status == ConnectionStatus.CONNECTING || isScanning -> Color(0xFFFFC107)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    }
+
+    SettingsCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(dotColor)
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (status == ConnectionStatus.CONNECTING || isScanning) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+        }
+
+        if (!isConnected) {
+            // Leitud NAD-id nime järgi; vajutus = ühenda
+            val found = devices.distinctBy { it.ip }
+            if (found.isNotEmpty()) {
+                Text(
+                    strings.discoveredDevices,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                found.forEach { device ->
+                    Surface(
+                        onClick = { vm.connectToDevice(device) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Speaker, null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                device.name.ifBlank { "NAD" },
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+
+            Button(
+                onClick = { vm.findDevices() },
+                enabled = !isScanning,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Search, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (isScanning) strings.searchingNad else strings.findNad)
+            }
+        }
+
+        // Proffidele: käsitsi IP ja seadme unustamine, peidetud lingi all
+        TextButton(
+            onClick = { showManual = !showManual },
+            modifier = Modifier.align(Alignment.Start),
+            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp)
+        ) {
+            Text(
+                strings.enterIpManually,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Icon(
+                if (showManual) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showManual,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = ipInput,
+                    onValueChange = { ipInput = it.trim() },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(strings.deviceIp) },
+                    placeholder = { Text(strings.deviceIpPlaceholder) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (ipInput.isNotBlank()) vm.connect(ipInput) }),
+                    shape = RoundedCornerShape(14.dp)
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(
+                        onClick = { vm.connect(ipInput) },
+                        enabled = ipInput.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(strings.connect)
+                    }
+                    if (savedIp.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = { vm.clearDevice(); ipInput = "" },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(strings.clearSavedDevice)
+                        }
+                    }
+                }
+            }
         }
     }
 }

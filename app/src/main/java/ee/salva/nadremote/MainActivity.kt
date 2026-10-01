@@ -53,10 +53,28 @@ fun NadRemoteApp(vm: NadViewModel) {
     val strings by vm.strings.collectAsState()
     val displaySources by vm.displaySources.collectAsState()
     val nowPlaying by vm.nowPlaying.collectAsState()
+    val pendingPlay by vm.pendingPlay.collectAsState()
+    val spotifyStuck by vm.spotifyStuck.collectAsState()
     val presets by vm.presets.collectAsState()
     val quickButtonOrder by vm.quickButtonOrder.collectAsState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val activeSourceId by vm.activeSourceId.collectAsState()
+    val radioSheetRequested by vm.radioSheetRequested.collectAsState()
+
+    // Spotify NAD-is: kiirnupp ja virtuaalne "Spotify" sisend teevad sama asja
+    val startSpotify: () -> Unit = {
+        coroutineScope.launch {
+            val started = vm.startSpotifyOnBlueOs()
+            if (!started) {
+                Toast.makeText(
+                    context,
+                    "Spotify seanssi ei leitud BluOS-ist. Käivita Spotify Connect üks kord ja proovi uuesti.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     // Auto-reconnect when app resumes
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -111,34 +129,48 @@ fun NadRemoteApp(vm: NadViewModel) {
                 nadState = nadState,
                 displaySources = displaySources,
                 nowPlaying = nowPlaying,
+                pendingPlay = pendingPlay,
+                spotifyStuck = spotifyStuck,
                 presets = presets,
                 strings = strings,
                 onPowerToggle = vm::powerToggle,
                 onVolumeUp = vm::volumeUp,
                 onVolumeDown = vm::volumeDown,
                 onMuteToggle = vm::muteToggle,
-                onSourceSelect = vm::setSource,
+                activeSourceId = activeSourceId,
+                onSourceSelect = { id ->
+                    when (id) {
+                        // Virtuaalsed sisendid: NAD BluOS sisendile + vastav allikas
+                        VirtualSource.RADIO -> vm.selectRadioInput()
+                        VirtualSource.SPOTIFY -> {
+                            vm.selectSpotifyInput()
+                            startSpotify()
+                        }
+                        else -> vm.setSource(id)
+                    }
+                },
                 onPlayPause = { if (nowPlaying.isPlaying) vm.blueOsPause() else vm.blueOsPlay() },
                 onSkipNext = vm::blueOsNext,
                 onSkipPrevious = vm::blueOsPrevious,
                 onPresetSelect = vm::playPreset,
-                onOpenSpotify = {
-                    coroutineScope.launch {
-                        val started = vm.startSpotifyOnBlueOs()
-                        if (!started) {
-                            Toast.makeText(
-                                context,
-                                "Spotify seanssi ei leitud BluOS-ist. Käivita Spotify Connect üks kord ja proovi uuesti.",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
-                },
+                onOpenSpotify = startSpotify,
                 onOpenSpotifyApp = { openSpotifyApp(context) },
                 quickButtonOrder = quickButtonOrder,
                 onQuickButtonOrderChange = vm::setQuickButtonOrder,
+                presetActions = PresetActions(
+                    canAddCurrent = nowPlaying.canSavePreset,
+                    onAddCurrent = vm::addCurrentAsPreset,
+                    onAddStation = vm::addStationPreset,
+                    onRename = vm::renamePreset,
+                    onDelete = vm::deletePreset
+                ),
                 onBrowseTuneIn = vm::browseTuneIn,
-                onPlayBrowseEntry = vm::playBrowseEntry
+                onPlayBrowseEntry = vm::playBrowseEntry,
+                onSearchTuneIn = vm::searchRadio,
+                onLocalRadio = vm::localRadio,
+                onTuneInQuality = vm::tuneInQuality,
+                radioSheetRequested = radioSheetRequested,
+                onRadioSheetShown = vm::onRadioSheetShown
             )
 
         }

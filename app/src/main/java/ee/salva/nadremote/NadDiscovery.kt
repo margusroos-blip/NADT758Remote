@@ -11,9 +11,11 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
@@ -116,9 +118,9 @@ class NadDiscovery(private val context: Context) {
                 semaphore.acquire()
                 try {
                     if (isPortOpen(ip, 8585, 200)) {
-                        val device = FoundDevice("NAD @ $ip", ip)
+                        val device = identify(ip)
                         synchronized(results) { results.add(device) }
-                        found["scan@$ip"] = device
+                        found[ip] = device
                         updateList()
                     }
                 } finally {
@@ -186,6 +188,35 @@ class NadDiscovery(private val context: Context) {
         const val MIN_SCAN_PREFIX = 22
     }
 
+    /**
+     * Loeb BluOS-ist (port 11000 /SyncStatus) seadme nime ja MAC-aadressi, et kasutajale
+     * näidata nime ("Elutoa ressiiver NAD T758"), mitte IP-d.
+     * Kui BluOS ei vasta, tagastab "NAD" ilma MAC-ita.
+     */
+    fun identify(ip: String): FoundDevice {
+        return try {
+            val conn = URL("http://$ip:11000/SyncStatus").openConnection() as HttpURLConnection
+            conn.connectTimeout = 1500
+            conn.readTimeout = 1500
+            val xml = try {
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } finally {
+                conn.disconnect()
+            }
+            val tag = xml.substringAfter("<SyncStatus", "").substringBefore(">")
+            fun attr(name: String) = Regex("""\b$name="([^"]*)"""").find(tag)?.groupValues?.get(1).orEmpty()
+                .replace("&quot;", "\"").replace("&apos;", "'")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            FoundDevice(
+                name = attr("name").ifBlank { attr("modelName").ifBlank { "NAD" } },
+                ip = ip,
+                mac = attr("mac").uppercase()
+            )
+        } catch (_: Exception) {
+            FoundDevice("NAD", ip)
+        }
+    }
+
     private fun isPortOpen(host: String, port: Int, timeout: Int): Boolean {
         return try {
             Socket().use {
@@ -235,8 +266,11 @@ class NadDiscovery(private val context: Context) {
             }
         }
 
+        // mDNS (_musc) leiab kõik BluOS-i mängijad; näita ainult neid, millel on NAD-i juhtport
         device?.let {
-            found["${it.name}@${it.ip}"] = it
+            if (!isPortOpen(it.ip, 8585, 500)) return
+            val identified = identify(it.ip)
+            found[it.ip] = identified.copy(name = identified.name.ifBlank { it.name })
             updateList()
         }
     }

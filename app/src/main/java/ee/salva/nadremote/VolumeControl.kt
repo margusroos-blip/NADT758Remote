@@ -23,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,27 +64,16 @@ fun VolumeControl(
             stateTween(), label = "volumeText"
         )
 
-        // Number liugleb muutumisel üles/alla; ühelaiused numbrid (tnum), et tekst ei tõmbleks
-        AnimatedContent(
-            targetState = volumeText,
-            transitionSpec = {
-                val up = (targetState.substringBefore(" ").toIntOrNull() ?: 0) >
-                    (initialState.substringBefore(" ").toIntOrNull() ?: 0)
-                val dir = if (up) 1 else -1
-                (slideInVertically(tween(180)) { -dir * it / 3 } + fadeIn(tween(180))) togetherWith
-                    (slideOutVertically(tween(180)) { dir * it / 3 } + fadeOut(tween(120)))
-            },
-            label = "volumeNumber"
-        ) { text ->
-            Text(
-                text,
-                style = MaterialTheme.typography.displayLarge.copy(
-                    fontWeight = FontWeight.Light,
-                    fontSize = fontSize,
-                    fontFeatureSettings = "tnum"
-                ),
-                color = displayColor
-            )
+        // Ühelaiused numbrid (tnum), et tekst ei tõmbleks
+        val numberStyle = MaterialTheme.typography.displayLarge.copy(
+            fontWeight = FontWeight.Light,
+            fontSize = fontSize,
+            fontFeatureSettings = "tnum"
+        )
+        if (isMuted) {
+            Text(volumeText, style = numberStyle, color = displayColor)
+        } else {
+            RollingNumber(value = volume, suffix = " dB", style = numberStyle, color = displayColor)
         }
         Spacer(Modifier.height(16.dp))
 
@@ -204,6 +195,39 @@ fun VolumeControl(
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // REPEATABLE BUTTON (for volume long press)
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+/**
+ * Nagu mehaaniline loendur: liigub ainult muutunud number.
+ * -55 -> -54 liigutab vaid viimast numbrit, "-5" jääb paigale.
+ */
+@Composable
+private fun RollingNumber(value: Int, suffix: String, style: TextStyle, color: Color) {
+    // Eelmine väärtus suuna jaoks; tavaline massiiv, et selle muutmine ei käivitaks uut kompositsiooni
+    val previous = remember { intArrayOf(value) }
+    val louder = value > previous[0]
+    SideEffect { previous[0] = value }
+
+    val text = value.toString()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        text.forEachIndexed { index, char ->
+            // Võti = positsioon paremalt, et üheliste koht jääks samaks ka -10 -> -9 puhul
+            key(text.length - index) {
+                AnimatedContent(
+                    targetState = char,
+                    transitionSpec = {
+                        val dir = if (louder) 1 else -1
+                        (slideInVertically(tween(180)) { dir * it / 2 } + fadeIn(tween(180))) togetherWith
+                            (slideOutVertically(tween(180)) { -dir * it / 2 } + fadeOut(tween(120)))
+                    },
+                    label = "volumeDigit"
+                ) { c ->
+                    Text(c.toString(), style = style, color = color)
+                }
+            }
+        }
+        Text(suffix, style = style, color = color)
+    }
+}
 
 @Composable
 fun RepeatableButton(

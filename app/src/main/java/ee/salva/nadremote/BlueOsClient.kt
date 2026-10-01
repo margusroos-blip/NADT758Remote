@@ -35,6 +35,7 @@ class BlueOsClient {
         private const val LONG_POLL_TIMEOUT = 100 // sekundit (BluOS soovitab 100)
         private const val SPOTIFY_WAIT_ATTEMPTS = 12
         private const val SPOTIFY_WAIT_STEP_MS = 350L
+        private val TUNEIN_STATION = Regex("^TuneIn:s\\d+$", RegexOption.IGNORE_CASE)
     }
 
     // Tavaline klient kiirte pÃ¤ringute jaoks (presets, commands)
@@ -83,6 +84,8 @@ class BlueOsClient {
         currentEtag = ""
         cachedSpotifySourceUrl = null
         cachedSpotifyPresetId = null
+        cachedLocalRadio = null
+        cachedAirableLocal = null
         statusActions = emptyList()
         _nowPlaying.value = NowPlaying()
         _presets.value = emptyList()
@@ -166,6 +169,7 @@ class BlueOsClient {
             
             var etag = ""
             var state = ""
+            var streamFormat = ""
             var title1 = ""
             var title2 = ""
             var title3 = ""
@@ -211,6 +215,7 @@ class BlueOsClient {
                         if (text.isNotBlank()) {
                             when (currentTag) {
                                 "state" -> state = text
+                                "streamFormat" -> streamFormat = text
                                 "title1" -> title1 = text
                                 "title2" -> title2 = text
                                 "title3" -> title3 = text
@@ -245,6 +250,9 @@ class BlueOsClient {
             
             val nowPlaying = NowPlaying(
                 isPlaying = state == "stream" || state == "play",
+                state = state,
+                streamFormat = streamFormat,
+                streamUrl = streamUrl.orEmpty(),
                 service = service,
                 serviceIcon = serviceIcon,
                 artist = artist.ifBlank { title2 },
@@ -382,6 +390,150 @@ class BlueOsClient {
     fun next() = sendCommand("Skip")
     fun previous() = sendCommand("Back")
 
+    /**
+     * TuneIn-i otsing nime järgi (/Browse?key=TuneIn:Search&q=...).
+     * Tagastab ainult mängitavad jaamad; saated/podcastid jäetakse välja.
+     */
+    suspend fun searchTuneIn(query: String): List<BrowseEntry> {
+        if (ip.isBlank() || query.isBlank()) return emptyList()
+        val url = "http://$ip:11000/Browse".toHttpUrl().newBuilder()
+            .addQueryParameter("key", "TuneIn:Search")
+            .addQueryParameter("q", query.trim())
+            .build()
+            .toString()
+        // Jaamad on "TuneIn:s123", saadete episoodid "TuneIn:t123" — näitame ainult jaamu.
+        // Sama jaam võib olla nii "Top Results" kui "Stations" all, seega distinct.
+        return fetchBrowseItems(url)
+            .mapNotNull { item ->
+                val play = item.playUrl.ifBlank { item.autoplayUrl }
+                val stationUrl = normalizeApiUrl(play).toHttpUrlOrNull()?.queryParameter("url")
+                if (stationUrl != null && TUNEIN_STATION.matches(stationUrl)) stationUrl to item else null
+            }
+            .distinctBy { it.first }
+            .map { it.second.toBrowseEntry() }
+    }
+
+    // Jaama voo kvaliteet TuneIn-ist; UNKNOWN_QUALITY = küsitud, aga teadmata
+    private val qualityCache = java.util.concurrent.ConcurrentHashMap<String, StreamQuality>()
+
+    /**
+     * Jaama voo formaat ja bitrate TuneIn-i avalikust API-st (BluOS seda ei anna).
+     * Väljaminev päring sisaldab ainult jaama ID-d (nt "s25067"), mitte kasutaja andmeid.
+     */
+    fun tuneInQuality(stationId: String): StreamQuality? {
+        if (stationId.isBlank()) return null
+        qualityCache[stationId]?.let { return it.takeIf { q -> q != UNKNOWN_QUALITY } }
+        val quality = try {
+            val url = "https://opml.radiotime.com/Tune.ashx".toHttpUrl().newBuilder()
+                .addQueryParameter("id", stationId)
+                .addQueryParameter("render", "json")
+                .addQueryParameter("formats", "mp3,aac,ogg,hls")
+                .build()
+            client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                val body = org.json.JSONObject(response.body?.string().orEmpty()).optJSONArray("body")
+                    ?: return@use null
+                (0 until body.length())
+                    .mapNotNull { body.optJSONObject(it) }
+                    .firstOrNull { it.optString("element") == "audio" && it.optInt("bitrate") > 0 }
+                    ?.let { StreamQuality(it.optString("media_type").uppercase(), it.optInt("bitrate")) }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TuneIn quality failed ($stationId): ${e.message}")
+            null
+        }
+        qualityCache[stationId] = quality ?: UNKNOWN_QUALITY
+        return quality
+    }
+
+    private var cachedLocalRadio: List<BrowseEntry>? = null
+
+    /**
+     * TuneIn-i "Local Radio": NAD-i asukoha järgi kohalikud jaamad (Eestis nt Raadio 2,
+     * Kuku, Power Hit). Tulemus hoitakse seansi ajaks meeles, et leht avaneks kohe.
+     */
+    suspend fun tuneInLocalRadio(): List<BrowseEntry> {
+        if (ip.isBlank()) return emptyList()
+        cachedLocalRadio?.let { if (it.isNotEmpty()) return it }
+        val root = fetchBrowseItems(buildBrowseByKeyUrl("TuneIn:"))
+        val local = root.firstOrNull { it.browseKey.contains("categories%252Flocal", ignoreCase = true) }
+            ?: root.firstOrNull { it.text.equals("Local Radio", ignoreCase = true) }
+            ?: return emptyList()
+        val stations = fetchBrowseItems(buildBrowseByKeyUrl(local.browseKey))
+            .filter { it.playUrl.isNotBlank() || it.autoplayUrl.isNotBlank() }
+            .map { it.toBrowseEntry() }
+        cachedLocalRadio = stations
+        return stations
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Raadio = TuneIn + Airable (BluOS-i "Radio" menüü). Kasutaja ei pea teadma,
+    // kummast kataloogist jaam tuleb: otsime mõlemast ja näitame iga jaama üks kord.
+    // Kui jaam on mõlemas, eelistame TuneIn-i (selle kvaliteeti näeme ette).
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** Airable'i otsing: BluOS annab esmalt lingid ("Stations", "Podcasts"), võtame jaamad. */
+    suspend fun searchAirable(query: String): List<BrowseEntry> {
+        if (ip.isBlank() || query.isBlank()) return emptyList()
+        val url = "http://$ip:11000/Browse".toHttpUrl().newBuilder()
+            .addQueryParameter("key", "Airable:Search")
+            .addQueryParameter("q", query.trim())
+            .build()
+            .toString()
+        val stationsLink = fetchBrowseItems(url)
+            .firstOrNull { it.browseKey.contains("c=station", ignoreCase = true) }
+            ?: return emptyList()
+        return fetchBrowseItems(buildBrowseByKeyUrl(stationsLink.browseKey))
+            .filter { it.playUrl.isNotBlank() || it.autoplayUrl.isNotBlank() }
+            .map { it.toBrowseEntry() }
+    }
+
+    private var cachedAirableLocal: List<BrowseEntry>? = null
+
+    /** Airable'i "Local stations" (NAD-i asukoha järgi). */
+    suspend fun airableLocalRadio(): List<BrowseEntry> {
+        if (ip.isBlank()) return emptyList()
+        cachedAirableLocal?.let { if (it.isNotEmpty()) return it }
+        val local = fetchBrowseItems(buildBrowseByKeyUrl("Airable:"))
+            .firstOrNull { it.text.equals("Local stations", ignoreCase = true) }
+            ?: return emptyList()
+        val stations = fetchBrowseItems(buildBrowseByKeyUrl(local.browseKey))
+            .filter { it.playUrl.isNotBlank() || it.autoplayUrl.isNotBlank() }
+            .map { it.toBrowseEntry() }
+        cachedAirableLocal = stations
+        return stations
+    }
+
+    suspend fun searchRadio(query: String): List<BrowseEntry> = coroutineScope {
+        val tuneIn = async { searchTuneIn(query) }
+        val airable = async { searchAirable(query) }
+        mergeStations(tuneIn.await(), airable.await())
+    }
+
+    suspend fun localRadio(): List<BrowseEntry> = coroutineScope {
+        val tuneIn = async { tuneInLocalRadio() }
+        val airable = async { airableLocalRadio() }
+        mergeStations(tuneIn.await(), airable.await())
+    }
+
+    /**
+     * Üks nimekiri: TuneIn-i järjekord, samanimeline Airable'i jaam kohe tema järel
+     * (UI näitab mõlemal kataloogi silti, kasutaja valib ise). Ülejäänud Airable'i jaamad lõppu.
+     */
+    private fun mergeStations(primary: List<BrowseEntry>, secondary: List<BrowseEntry>): List<BrowseEntry> {
+        val remaining = secondary.toMutableList()
+        val result = mutableListOf<BrowseEntry>()
+        for (entry in primary) {
+            result += entry
+            val key = radioNameKey(entry.title)
+            if (key.isBlank()) continue
+            val twins = remaining.filter { radioNameKey(it.title) == key }
+            result += twins
+            remaining -= twins.toSet()
+        }
+        return result + remaining
+    }
+
     suspend fun browseTuneIn(key: String?): List<BrowseEntry> {
         if (ip.isBlank()) return emptyList()
 
@@ -412,30 +564,82 @@ class BlueOsClient {
         return false
     }
 
-    suspend fun saveCurrentAsPreset(name: String): Boolean {
+    // ═══════════════════════════════════════════════════════════════════════
+    // Lemmikute (BluOS presetid) haldus
+    //   lisa:            /SetPreset?name=&url=&image=&service=   (saab järgmise vaba id)
+    //   nimeta ümber:    /SetPreset?id=N&name=&url=&image=&service=  (id ja url jäävad)
+    //   kustuta:         /SetPreset?id=N&delete=1
+    //   praegu mängiv:   Status <action type="preset"> URL (nt /Action?action=addPreset&service=Spotify)
+    // Kontrollitud NAD T758 / BluOS 4.14.12 peal (2026-09-30). NB: muudab lemmikuid
+    // NAD-is endas — need on nähtavad ka BluOS-i äpis.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** Lisab praegu mängiva (nt Spotify playlist/album) lemmikuks, kui BluOS seda pakub. */
+    suspend fun addCurrentAsPreset(): Boolean {
         if (ip.isBlank()) return false
-
         fetchStatus(longPoll = false)
-        val presetName = sanitizePresetName(name).ifBlank { suggestedPresetName() }
+        val action = statusActions.firstOrNull { isSavePresetAction(it) } ?: return false
+        val before = _presets.value.size
+        val ok = httpGetOk(normalizeApiUrl(action.url))
+        if (ok) refreshPresetsAfterChange()
+        return ok && _presets.value.size > before
+    }
 
-        var saved = false
+    /** Lisab TuneIn-i otsingust leitud jaama lemmikuks. */
+    suspend fun addStationPreset(entry: BrowseEntry): Boolean {
+        val play = entry.playUrl.ifBlank { entry.autoplayUrl }
+        val parsed = normalizeApiUrl(play).toHttpUrlOrNull() ?: return false
+        val url = parsed.queryParameter("url")?.takeIf { it.isNotBlank() } ?: return false
+        val image = parsed.queryParameter("image").orEmpty()
+        return setPreset(id = null, name = entry.title, url = url, image = image)
+    }
 
-        val actionUrl = statusActions.firstOrNull { isSavePresetAction(it) }?.url
-        if (!actionUrl.isNullOrBlank()) {
-            saved = trySaveViaActionUrl(actionUrl, presetName)
+    suspend fun renamePreset(preset: Preset, newName: String): Boolean {
+        // fetchPresets teeb suhtelisest pildist täis-URL-i (NAD-i IP-ga); saada tagasi
+        // algne suhteline kuju, muidu jääks lemmikusse vana IP ja pilt läheks IP muutudes katki
+        val localPrefix = "http://$ip:11000"
+        val image = if (preset.imageUrl.startsWith(localPrefix)) {
+            preset.imageUrl.removePrefix(localPrefix).removeSuffix("?followRedirects=1")
+        } else {
+            preset.imageUrl
         }
+        return setPreset(id = preset.id, name = newName, url = preset.url, image = image)
+    }
 
-        if (!saved) {
-            saved = trySaveViaSaveEndpoint(presetName)
+    suspend fun deletePreset(preset: Preset): Boolean {
+        if (ip.isBlank()) return false
+        val ok = httpGetOk("http://$ip:11000/SetPreset?id=${preset.id}&delete=1")
+        if (ok) refreshPresetsAfterChange()
+        return ok
+    }
+
+    private suspend fun setPreset(id: Int?, name: String, url: String, image: String): Boolean {
+        if (ip.isBlank() || url.isBlank()) return false
+        val cleanName = sanitizePresetName(name)
+        if (cleanName.isBlank()) return false
+        val builder = "http://$ip:11000/SetPreset".toHttpUrl().newBuilder()
+        id?.let { builder.addQueryParameter("id", it.toString()) }
+        builder.addQueryParameter("name", cleanName)
+        builder.addQueryParameter("service", url.substringBefore(':'))
+        builder.addQueryParameter("url", url)
+        if (image.isNotBlank()) builder.addQueryParameter("image", image)
+        val ok = httpGetOk(builder.build().toString())
+        if (ok) refreshPresetsAfterChange()
+        return ok
+    }
+
+    private fun httpGetOk(url: String): Boolean {
+        return try {
+            client.newCall(Request.Builder().url(url).build()).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.w(TAG, "Preset request failed: ${e.message}")
+            false
         }
+    }
 
-        if (saved) {
-            currentEtag = ""
-            delay(350)
-            fetchPresets()
-        }
-
-        return saved
+    private suspend fun refreshPresetsAfterChange() {
+        delay(250)
+        fetchPresets()
     }
 
     /**
@@ -445,6 +649,23 @@ class BlueOsClient {
      * 3) proovi Spotify presetit (kui olemas)
      */
     suspend fun startSpotifyOnBlueOs(): Boolean {
+        val active = activateSpotify()
+        if (active) ensurePlaying()
+        return active
+    }
+
+    /**
+     * Autoplay: kui Spotify on valitud, aga pausil (nt jäi eelmisest korrast pooleli),
+     * pane mängima. Kasutaja ei pea eraldi Play-d vajutama.
+     */
+    private suspend fun ensurePlaying() {
+        fetchStatus(longPoll = false)
+        if (!_nowPlaying.value.isPlaying) {
+            tryResumeSpotify()
+        }
+    }
+
+    private suspend fun activateSpotify(): Boolean {
         if (ip.isBlank()) return false
 
         fetchStatus(longPoll = false)
@@ -653,7 +874,9 @@ class BlueOsClient {
                                 playUrl = playUrl,
                                 autoplayUrl = autoplayUrl,
                                 actionUrl = actionUrl,
-                                url = url
+                                url = url,
+                                text2 = firstNonBlank(parser.getAttributeValue(null, "text2")),
+                                image = firstNonBlank(parser.getAttributeValue(null, "image"))
                             )
                         )
                     }
@@ -779,7 +1002,9 @@ class BlueOsClient {
         val playUrl: String,
         val autoplayUrl: String,
         val actionUrl: String,
-        val url: String
+        val url: String,
+        val text2: String = "",
+        val image: String = ""
     )
 
     private data class StatusAction(
@@ -791,6 +1016,7 @@ class BlueOsClient {
     private fun BrowseItem.toBrowseEntry(): BrowseEntry {
         val titleText = firstNonBlank(text, name, title, service, id)
         val subtitleText = when {
+            text2.isNotBlank() -> text2
             service.isNotBlank() && !service.equals(titleText, true) -> service
             else -> ""
         }
@@ -800,7 +1026,8 @@ class BlueOsClient {
             browseKey = browseKey,
             playUrl = playUrl,
             autoplayUrl = autoplayUrl,
-            actionUrl = actionUrl
+            actionUrl = actionUrl,
+            imageUrl = image
         )
     }
 
@@ -883,70 +1110,17 @@ class BlueOsClient {
         return values.firstOrNull { !it.isNullOrBlank() }?.trim() ?: ""
     }
 
+    // Ainult BluOS-i "Add preset" tegevus. NB: "Favourite" on TuneIn-i konto lemmik
+    // (teine asi) ja /Save salvestab playlisti — neid siin kasutada ei tohi.
     private fun isSavePresetAction(action: StatusAction): Boolean {
-        val haystack = "${action.name}|${action.text}|${action.url}".lowercase()
-        if (haystack.contains("remove") || haystack.contains("delete")) return false
-        return haystack.contains("preset") ||
-            haystack.contains("favorite") ||
-            haystack.contains("favourite") ||
-            haystack.contains("bookmark") ||
-            haystack.contains("save")
-    }
-
-    private suspend fun trySaveViaActionUrl(rawUrl: String, presetName: String): Boolean {
-        val normalized = normalizeApiUrl(rawUrl)
-        val parsed = normalized.toHttpUrlOrNull() ?: return false
-        val builder = parsed.newBuilder()
-
-        val likelyNeedsName = parsed.queryParameterNames.any { it.equals("name", true) } ||
-            normalized.contains("setpreset", true) ||
-            normalized.contains("/save", true)
-        if (likelyNeedsName) {
-            builder.setQueryParameter("name", presetName)
-        }
-
-        return try {
-            val request = Request.Builder()
-                .url(builder.build())
-                .build()
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.w(TAG, "Save via action URL failed: ${e.message}")
-            false
-        }
-    }
-
-    private suspend fun trySaveViaSaveEndpoint(presetName: String): Boolean {
-        return try {
-            val requestUrl = "http://$ip:11000/Save".toHttpUrl()
-                .newBuilder()
-                .addQueryParameter("name", presetName)
-                .build()
-
-            val request = Request.Builder().url(requestUrl).build()
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.w(TAG, "Save endpoint failed: ${e.message}")
-            false
-        }
+        val url = action.url.lowercase()
+        return url.contains("action=addpreset") || url.contains("/setpreset")
     }
 
     private fun sanitizePresetName(name: String): String {
         val trimmed = name.trim()
         if (trimmed.isBlank()) return ""
         return trimmed.take(60)
-    }
-
-    private fun suggestedPresetName(): String {
-        val now = _nowPlaying.value
-        val candidate = when {
-            now.isRadio -> now.stationName.ifBlank { now.displayTitle }
-            now.track.isNotBlank() && now.artist.isNotBlank() -> "${now.artist} - ${now.track}"
-            now.track.isNotBlank() -> now.track
-            now.service.isNotBlank() -> now.service
-            else -> "My preset"
-        }
-        return sanitizePresetName(candidate).ifBlank { "My preset" }
     }
 
     private suspend fun findSpotifyPresetId(): Int? {
@@ -975,6 +1149,22 @@ class BlueOsClient {
         return preset.name.contains("spotify", true) ||
             preset.url.contains("spotify", true) ||
             preset.imageUrl.contains("spotify", true)
+    }
+
+    /**
+     * "Raadio" virtuaalne sisend: mängi viimati kuulatud jaam.
+     * Eelistab sama URL-iga lemmikut (/Preset — kõige kindlam), siis otsingust saadud
+     * /Play URL-i, viimase võimalusena /Play?url=<jaama URL>.
+     */
+    suspend fun playRadio(radio: LastRadio): Boolean {
+        if (ip.isBlank()) return false
+        if (_presets.value.isEmpty()) fetchPresets()
+        val preset = if (radio.url.isBlank()) null else _presets.value.firstOrNull {
+            it.url == radio.url || it.url.startsWith("${radio.url}/") || radio.url.startsWith("${it.url}/")
+        }
+        if (preset != null && playPresetInternal(preset.id)) return true
+        if (radio.playUrl.isNotBlank() && playBrowseUrl(radio.playUrl)) return true
+        return radio.url.isNotBlank() && playBrowseUrl(radio.url)
     }
 
     private suspend fun playPresetInternal(presetId: Int): Boolean {
@@ -1040,6 +1230,12 @@ class BlueOsClient {
 
 data class NowPlaying(
     val isPlaying: Boolean = false,
+    // BluOS-i toores olek: play, pause, stop, stream, connecting
+    val state: String = "",
+    // BluOS-i voo formaat, nt "MP3 320 kb/s" (tuleb otse NAD-ist)
+    val streamFormat: String = "",
+    // BluOS-i allika URL, raadio puhul nt "Airable:radio:https://..." (lemmiku-vormis)
+    val streamUrl: String = "",
     val service: String = "",
     val serviceIcon: String = "",
     // Muusika (Spotify, Local jne)
@@ -1061,6 +1257,14 @@ data class NowPlaying(
 ) {
     val hasContent: Boolean
         get() = track.isNotBlank() || stationName.isNotBlank() || showName.isNotBlank()
+
+    /** "MP3 320 kb/s" -> "MP3 · 320 kbps"; muu formaat näidatakse nii nagu BluOS selle annab. */
+    val qualityLabel: String
+        get() {
+            val match = Regex("""^\s*([A-Za-z0-9+]+)\s+(\d+)\s*kb/?s\s*$""", RegexOption.IGNORE_CASE)
+                .find(streamFormat) ?: return streamFormat.trim()
+            return "${match.groupValues[1].uppercase()} · ${match.groupValues[2]} kbps"
+        }
     
     val isRadio: Boolean
         get() = isStream || service.contains("TuneIn", true) || 
@@ -1119,13 +1323,44 @@ data class Preset(
     val imageUrl: String = ""
 )
 
+/**
+ * Jaama nime võti duplikaatide leidmiseks eri kataloogide ja lemmikute vahel:
+ * "Radio Elmar" == "Raadio Elmar", "101.6 | ERR Raadio 2" -> "errradio2",
+ * "Raadio Kuku 100.7 (Adult Hits)" == "Raadio Kuku".
+ */
+fun radioNameKey(name: String): String {
+    var s = name.lowercase()
+    if (s.contains("|")) s = s.substringAfterLast("|")
+    return s
+        .replace(Regex("""\(.*?\)"""), " ")
+        .replace(Regex("""\b\d{2,3}[.,]\d\b"""), " ")
+        .replace("raadio", "radio")
+        .replace(Regex("""[^\p{L}\p{N}]"""), "")
+}
+
+/** Raadiovoo kvaliteet, nt AAC 192 kbps. */
+data class StreamQuality(val format: String, val kbps: Int) {
+    /** TuneIn annab nt 191; näitame lähimat tavapärast väärtust (192). */
+    val label: String
+        get() {
+            val standard = listOf(32, 48, 64, 96, 128, 160, 192, 256, 320)
+                .minByOrNull { kotlin.math.abs(it - kbps) }
+                ?.takeIf { kotlin.math.abs(it - kbps) <= it * 0.05 } ?: kbps
+            return listOf(format, "$standard kbps").filter { it.isNotBlank() }.joinToString(" · ")
+        }
+}
+
+private val UNKNOWN_QUALITY = StreamQuality("", 0)
+
 data class BrowseEntry(
     val title: String = "",
     val subtitle: String = "",
     val browseKey: String = "",
     val playUrl: String = "",
     val autoplayUrl: String = "",
-    val actionUrl: String = ""
+    val actionUrl: String = "",
+    // Jaama logo (TuneIn)
+    val imageUrl: String = ""
 ) {
     val isBrowsable: Boolean
         get() = browseKey.isNotBlank()

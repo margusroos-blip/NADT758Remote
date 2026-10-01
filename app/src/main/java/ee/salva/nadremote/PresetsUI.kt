@@ -1,5 +1,7 @@
 ﻿package com.nadremote.app
 
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -8,21 +10,34 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -49,8 +66,14 @@ fun PresetSelector(
     onOpenSpotify: (() -> Unit)? = null,
     onBrowseTuneIn: (suspend (String?) -> List<BrowseEntry>)? = null,
     onPlayBrowseEntry: (suspend (BrowseEntry) -> Boolean)? = null,
+    onSearchTuneIn: (suspend (String) -> List<BrowseEntry>)? = null,
+    onLocalRadio: (suspend () -> List<BrowseEntry>)? = null,
+    onTuneInQuality: (suspend (String) -> StreamQuality?)? = null,
+    radioSheetRequested: Boolean = false,
+    onRadioSheetShown: () -> Unit = {},
     quickButtonOrder: List<String> = emptyList(),
     onQuickButtonOrderChange: ((List<String>) -> Unit)? = null,
+    presetActions: PresetActions? = null,
     showTitle: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -69,6 +92,14 @@ fun PresetSelector(
         mutableStateOf(applyQuickButtonOrder(candidateButtons, quickButtonOrder))
     }
     var showTuneInSheet by remember { mutableStateOf(false) }
+
+    // "Raadio" sisend, aga jaama pole veel kuulatud -> ava raadio leht
+    LaunchedEffect(radioSheetRequested) {
+        if (radioSheetRequested && showTuneIn) {
+            showTuneInSheet = true
+            onRadioSheetShown()
+        }
+    }
     var showQuickOrderSheet by remember { mutableStateOf(false) }
     var draggingIndex by remember { mutableIntStateOf(-1) }
     var dragOffsetPx by remember { mutableFloatStateOf(0f) }
@@ -191,7 +222,7 @@ fun PresetSelector(
                     ) {
                         when (button) {
                             QuickButtonItem.Spotify -> SpotifyButton()
-                            QuickButtonItem.TuneIn -> TuneInButton()
+                            QuickButtonItem.TuneIn -> TuneInButton(label = strings.radio)
                             is QuickButtonItem.PresetItem -> PresetButton(preset = button.preset)
                         }
                     }
@@ -229,14 +260,22 @@ fun PresetSelector(
             onActivate = { button ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 activateButton(button)
-            }
+            },
+            presetActions = presetActions
         )
     }
 
     if (showTuneInSheet && onBrowseTuneIn != null && onPlayBrowseEntry != null) {
         TuneInBrowseSheet(
+            presets = presets,
+            strings = strings,
+            onAddStation = presetActions?.onAddStation,
+            onRemovePreset = presetActions?.onDelete,
             onDismiss = { showTuneInSheet = false },
             onBrowse = onBrowseTuneIn,
+            onSearch = onSearchTuneIn,
+            onLocalRadio = onLocalRadio,
+            onQuality = onTuneInQuality,
             onPlayEntry = { entry ->
                 val ok = onPlayBrowseEntry(entry)
                 if (ok) {
@@ -286,7 +325,9 @@ fun SpotifyButton(size: Dp = 76.dp) {
 }
 
 @Composable
-fun TuneInButton(size: Dp = 76.dp) {
+fun TuneInButton(label: String, size: Dp = 76.dp) {
+    // "Raadio" nupp (TuneIn + Airable). Ikoon: saatetorn aktsentvärvi ringis —
+    // sama kaaluga kui Spotify logo kõrvalnupul, mitte hall üldikoon.
     Surface(
         modifier = Modifier.size(size),
         shape = RoundedCornerShape(16.dp),
@@ -299,15 +340,23 @@ fun TuneInButton(size: Dp = 76.dp) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Icon(
-                Icons.Default.Radio,
-                contentDescription = "TuneIn",
-                modifier = Modifier.size(30.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Surface(
+                modifier = Modifier.size(32.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Rounded.CellTower,
+                        contentDescription = label,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "TuneIn",
+                text = label,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Medium,
@@ -406,13 +455,25 @@ fun MorePresetsButton(
     }
 }
 
-private sealed class QuickButtonItem(val orderKey: String) {
+/**
+ * Lemmikute haldus. Kõik muudavad lemmikuid NAD-is endas (BluOS presetid),
+ * seega on muutused näha ka BluOS-i äpis.
+ */
+class PresetActions(
+    val canAddCurrent: Boolean,
+    val onAddCurrent: suspend () -> Boolean,
+    val onAddStation: suspend (BrowseEntry) -> Boolean,
+    val onRename: suspend (Preset, String) -> Boolean,
+    val onDelete: suspend (Preset) -> Boolean
+)
+
+internal sealed class QuickButtonItem(val orderKey: String) {
     data object Spotify : QuickButtonItem("spotify")
     data object TuneIn : QuickButtonItem("tunein")
     data class PresetItem(val preset: Preset) : QuickButtonItem("preset:${preset.id}")
 }
 
-private fun applyQuickButtonOrder(
+internal fun applyQuickButtonOrder(
     baseButtons: List<QuickButtonItem>,
     savedOrder: List<String>
 ): List<QuickButtonItem> {
@@ -437,31 +498,59 @@ private fun applyQuickButtonOrder(
 @Composable
 private fun QuickButtonVisual(
     button: QuickButtonItem,
+    strings: StringResources,
     size: Dp = 76.dp
 ) {
     when (button) {
         QuickButtonItem.Spotify -> SpotifyButton(size = size)
-        QuickButtonItem.TuneIn -> TuneInButton(size = size)
+        QuickButtonItem.TuneIn -> TuneInButton(label = strings.radio, size = size)
         is QuickButtonItem.PresetItem -> PresetButton(preset = button.preset, size = size)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun QuickButtonOrderSheet(
+internal fun QuickButtonOrderSheet(
     buttons: List<QuickButtonItem>,
     strings: StringResources,
     onDismiss: () -> Unit,
     onOrderChange: (List<String>) -> Unit,
-    onActivate: (QuickButtonItem) -> Unit
+    onActivate: (QuickButtonItem) -> Unit,
+    presetActions: PresetActions? = null,
+    title: String? = null,
+    hint: String? = null,
+    showTopBadges: Boolean = true,
+    onSearchStations: (() -> Unit)? = null
 ) {
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var editMode by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<Preset?>(null) }
+    var deleteTarget by remember { mutableStateOf<Preset?>(null) }
+
+    // Käivitab lemmiku muudatuse NAD-is; ebaõnnestumisel lühike teade
+    val runPresetAction: (suspend () -> Boolean) -> Unit = { action ->
+        if (!busy) {
+            scope.launch {
+                busy = true
+                val ok = action()
+                busy = false
+                if (!ok) Toast.makeText(context, strings.presetActionFailed, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     var ordered by remember(buttons) { mutableStateOf(buttons) }
-    var draggingIndex by remember { mutableIntStateOf(-1) }
-    var dragOffsetX by remember { mutableFloatStateOf(0f) }
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
-    val cellStepPx = with(LocalDensity.current) { 92.dp.toPx() }
-    val swapThreshold = cellStepPx * 0.55f
+    var dragKey by remember { mutableStateOf<String?>(null) }
+    var dragTarget by remember { mutableIntStateOf(-1) }
+    var fingerPos by remember { mutableStateOf(Offset.Zero) }
+    var grabOffset by remember { mutableStateOf(Offset.Zero) }
+    // Iga ruudustiku koha (indeksi) asukoht; kohad ei liigu, liiguvad ainult ikoonid
+    val slotRects = remember { mutableStateMapOf<Int, Rect>() }
+    // Tavaline hoidja, et koordinaatide uuendus ei käivitaks uut kompositsiooni
+    val gridCoords = remember { arrayOfNulls<LayoutCoordinates>(1) }
     val columns = 4
     val scrollState = rememberScrollState()
 
@@ -476,157 +565,302 @@ private fun QuickButtonOrderSheet(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                text = strings.presets,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = title ?: strings.presets,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                if (presetActions != null) {
+                    TextButton(onClick = { editMode = !editMode }) {
+                        Text(if (editMode) strings.presetDone else strings.presetEdit)
+                    }
+                }
+            }
 
             Text(
-                text = "Long press and drag icons. Top 3 appear on main screen.",
+                text = if (editMode) strings.presetEditHint else (hint ?: strings.reorderHint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Column(
+            if (presetActions != null && presetActions.canAddCurrent) {
+                OutlinedButton(
+                    onClick = { runPresetAction { presetActions.onAddCurrent() } },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Add, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(strings.addCurrentPreset)
+                }
+            }
+
+            // Raadio lemmikute lehel: uue jaama lisamine käib otsingu kaudu
+            if (onSearchStations != null) {
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onSearchStations()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Search, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(strings.searchStations)
+                }
+            }
+
+            // Lohistamine: pikk vajutus tõstab ikooni sõrme külge (ülekate), teised teevad
+            // eelvaates ruumi; uus järjekord salvestatakse alles siis, kui sõrme lahti lased.
+            // Drag on terve ruudustiku peal (mitte iga ikooni peal), et ikoon ei kukuks
+            // sõrme küljest ära, kui see teise ritta liigub.
+            val dragged = dragKey?.let { k -> ordered.firstOrNull { it.orderKey == k } }
+            val shown = if (dragged != null && dragTarget >= 0) {
+                ordered.filter { it.orderKey != dragKey }.toMutableList().apply {
+                    add(dragTarget.coerceIn(0, size), dragged)
+                }
+            } else {
+                ordered
+            }
+
+            fun slotAt(point: Offset): Int = slotRects.entries
+                .filter { it.key < ordered.size }
+                .minByOrNull { (it.value.center - point).getDistanceSquared() }
+                ?.key ?: -1
+
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 620.dp)
-                    .verticalScroll(scrollState),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .verticalScroll(scrollState, enabled = dragKey == null)
             ) {
-                val rows = ordered.chunked(columns)
-                rows.forEachIndexed { rowIndex, row ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        row.forEachIndexed { colIndex, button ->
-                            val index = rowIndex * columns + colIndex
-                            key(button.orderKey) {
-                                val currentIndex by rememberUpdatedState(index)
-                                val currentButton by rememberUpdatedState(button)
-                                Box(
-                                    modifier = Modifier
-                                        .zIndex(if (draggingIndex == currentIndex) 1f else 0f)
-                                        .offset {
-                                            IntOffset(
-                                                x = if (draggingIndex == currentIndex) dragOffsetX.roundToInt() else 0,
-                                                y = if (draggingIndex == currentIndex) dragOffsetY.roundToInt() else 0
-                                            )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { gridCoords[0] = it }
+                        .pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { start ->
+                                    if (ordered.size < 2) return@detectDragGesturesAfterLongPress
+                                    val hit = slotRects.entries
+                                        .firstOrNull { it.key < ordered.size && it.value.contains(start) }
+                                        ?: return@detectDragGesturesAfterLongPress
+                                    dragKey = ordered[hit.key].orderKey
+                                    dragTarget = hit.key
+                                    grabOffset = start - hit.value.topLeft
+                                    fingerPos = start
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDrag = { change, amount ->
+                                    if (dragKey == null) return@detectDragGesturesAfterLongPress
+                                    change.consume()
+                                    fingerPos += amount
+                                    val target = slotAt(fingerPos)
+                                    if (target >= 0 && target != dragTarget) {
+                                        dragTarget = target
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                },
+                                onDragEnd = {
+                                    val key = dragKey
+                                    val target = dragTarget
+                                    val item = ordered.firstOrNull { it.orderKey == key }
+                                    if (item != null && target >= 0) {
+                                        val newOrder = ordered.filter { it.orderKey != key }.toMutableList().apply {
+                                            add(target.coerceIn(0, size), item)
                                         }
-                                        .graphicsLayer {
-                                            if (draggingIndex == currentIndex) {
-                                                scaleX = 1.03f
-                                                scaleY = 1.03f
+                                        if (newOrder != ordered) {
+                                            ordered = newOrder
+                                            onOrderChange(newOrder.map { it.orderKey })
+                                        }
+                                    }
+                                    dragKey = null
+                                    dragTarget = -1
+                                },
+                                onDragCancel = {
+                                    dragKey = null
+                                    dragTarget = -1
+                                }
+                            )
+                        },
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    shown.chunked(columns).forEachIndexed { rowIndex, row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            row.forEachIndexed { colIndex, button ->
+                                val index = rowIndex * columns + colIndex
+                                val isDragged = button.orderKey == dragKey
+                                key(button.orderKey) {
+                                    val currentButton by rememberUpdatedState(button)
+                                    Box(
+                                        modifier = Modifier
+                                            .onGloballyPositioned { cell ->
+                                                gridCoords[0]?.let { grid ->
+                                                    if (grid.isAttached && cell.isAttached) {
+                                                        slotRects[index] = Rect(
+                                                            grid.localPositionOf(cell, Offset.Zero),
+                                                            cell.size.toSize()
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            // Tühi koht, kuhu lohistatav ikoon maandub
+                                            .graphicsLayer { alpha = if (isDragged) 0.25f else 1f }
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onTap = {
+                                                        if (dragKey != null) return@detectTapGestures
+                                                        val tapped = currentButton
+                                                        if (editMode) {
+                                                            // Muutmisrežiimis: vajutus = nimeta ümber
+                                                            if (tapped is QuickButtonItem.PresetItem) renameTarget = tapped.preset
+                                                        } else {
+                                                            onActivate(tapped)
+                                                            onDismiss()
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                    ) {
+                                        QuickButtonVisual(button = button, strings = strings, size = 84.dp)
+                                        if (editMode && button is QuickButtonItem.PresetItem && !isDragged) {
+                                            Surface(
+                                                onClick = { deleteTarget = button.preset },
+                                                modifier = Modifier
+                                                    .align(Alignment.TopStart)
+                                                    .padding(top = 2.dp, start = 2.dp)
+                                                    .size(22.dp),
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.error
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        Icons.Default.Close,
+                                                        contentDescription = strings.remove,
+                                                        modifier = Modifier.size(14.dp),
+                                                        tint = MaterialTheme.colorScheme.onError
+                                                    )
+                                                }
                                             }
                                         }
-                                        .pointerInput(Unit) {
-                                            detectDragGesturesAfterLongPress(
-                                                onDragStart = {
-                                                    if (ordered.size < 2) return@detectDragGesturesAfterLongPress
-                                                    draggingIndex = currentIndex
-                                                    dragOffsetX = 0f
-                                                    dragOffsetY = 0f
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                },
-                                                onDragEnd = {
-                                                    draggingIndex = -1
-                                                    dragOffsetX = 0f
-                                                    dragOffsetY = 0f
-                                                },
-                                                onDragCancel = {
-                                                    draggingIndex = -1
-                                                    dragOffsetX = 0f
-                                                    dragOffsetY = 0f
-                                                },
-                                                onDrag = { change, dragAmount ->
-                                                    if (ordered.size < 2) return@detectDragGesturesAfterLongPress
-                                                    val current = draggingIndex
-                                                    if (current !in ordered.indices) return@detectDragGesturesAfterLongPress
-
-                                                    dragOffsetX += dragAmount.x
-                                                    dragOffsetY += dragAmount.y
-                                                    var target = current
-
-                                                    if (abs(dragOffsetX) >= abs(dragOffsetY)) {
-                                                        if (dragOffsetX > swapThreshold &&
-                                                            current % columns < columns - 1 &&
-                                                            current + 1 <= ordered.lastIndex
-                                                        ) {
-                                                            target = current + 1
-                                                            dragOffsetX -= cellStepPx
-                                                        } else if (dragOffsetX < -swapThreshold &&
-                                                            current % columns > 0
-                                                        ) {
-                                                            target = current - 1
-                                                            dragOffsetX += cellStepPx
-                                                        }
-                                                    } else {
-                                                        if (dragOffsetY > swapThreshold &&
-                                                            current + columns <= ordered.lastIndex
-                                                        ) {
-                                                            target = current + columns
-                                                            dragOffsetY -= cellStepPx
-                                                        } else if (dragOffsetY < -swapThreshold &&
-                                                            current - columns >= 0
-                                                        ) {
-                                                            target = current - columns
-                                                            dragOffsetY += cellStepPx
-                                                        }
-                                                    }
-
-                                                    if (target != current) {
-                                                        ordered = ordered.toMutableList().apply {
-                                                            add(target, removeAt(current))
-                                                        }
-                                                        draggingIndex = target
-                                                        onOrderChange(ordered.map { it.orderKey })
-                                                    }
-                                                    change.consume()
+                                        if (showTopBadges && index < 3) {
+                                            Surface(
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .padding(top = 2.dp, end = 2.dp)
+                                                    .size(18.dp),
+                                                shape = RoundedCornerShape(999.dp),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                tonalElevation = 2.dp
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = "${index + 1}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onPrimary
+                                                    )
                                                 }
-                                            )
-                                        }
-                                        .pointerInput(Unit) {
-                                            detectTapGestures(
-                                                onTap = {
-                                                    if (draggingIndex != -1) return@detectTapGestures
-                                                    onActivate(currentButton)
-                                                    onDismiss()
-                                                }
-                                            )
-                                        }
-                                ) {
-                                    QuickButtonVisual(button = button, size = 84.dp)
-                                    if (index < 3) {
-                                        Surface(
-                                            modifier = Modifier
-                                                .align(Alignment.TopEnd)
-                                                .padding(top = 2.dp, end = 2.dp)
-                                                .size(18.dp),
-                                            shape = RoundedCornerShape(999.dp),
-                                            color = MaterialTheme.colorScheme.primary,
-                                            tonalElevation = 2.dp
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text(
-                                                    text = "${index + 1}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onPrimary
-                                                )
                                             }
                                         }
                                     }
                                 }
                             }
+                            repeat(columns - row.size) {
+                                Spacer(Modifier.size(84.dp))
+                            }
                         }
-                        repeat(columns - row.size) {
-                            Spacer(Modifier.size(84.dp))
-                        }
+                    }
+                }
+
+                // Sõrme küljes olev ikoon: veidi suurem ja varjuga, järgib sõrme täpselt
+                if (dragged != null) {
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                IntOffset(
+                                    (fingerPos.x - grabOffset.x).roundToInt(),
+                                    (fingerPos.y - grabOffset.y).roundToInt()
+                                )
+                            }
+                            .zIndex(2f)
+                            .graphicsLayer {
+                                scaleX = 1.08f
+                                scaleY = 1.08f
+                                shadowElevation = 18f
+                                shape = RoundedCornerShape(16.dp)
+                            }
+                    ) {
+                        QuickButtonVisual(button = dragged, strings = strings, size = 84.dp)
                     }
                 }
             }
         }
+    }
+
+    renameTarget?.let { preset ->
+        var newName by remember(preset.id) { mutableStateOf(preset.name) }
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text(strings.renamePreset) },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it.take(60) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val target = preset
+                        val name = newName.trim()
+                        renameTarget = null
+                        if (name.isNotBlank() && name != target.name && presetActions != null) {
+                            runPresetAction { presetActions.onRename(target, name) }
+                        }
+                    },
+                    enabled = newName.isNotBlank()
+                ) { Text(strings.save) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) { Text(strings.cancel) }
+            }
+        )
+    }
+
+    deleteTarget?.let { preset ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(strings.removePresetTitle) },
+            text = { Text(preset.name) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val target = preset
+                        deleteTarget = null
+                        if (presetActions != null) {
+                            runPresetAction { presetActions.onDelete(target) }
+                        }
+                    }
+                ) { Text(strings.remove, color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text(strings.cancel) }
+            }
+        )
     }
 }
 
@@ -635,32 +869,95 @@ private data class TuneInPathNode(
     val key: String?
 )
 
+/**
+ * TuneIn: otsinguväli + kohalikud raadiod kohe esimesena (enamasti kuulatakse oma
+ * piirkonna jaamu). Kategooriate sirvimine on alles, aga lingi taga.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TuneInBrowseSheet(
+internal fun TuneInBrowseSheet(
+    presets: List<Preset>,
+    strings: StringResources,
+    onAddStation: (suspend (BrowseEntry) -> Boolean)?,
+    onRemovePreset: (suspend (Preset) -> Boolean)?,
     onDismiss: () -> Unit,
     onBrowse: suspend (String?) -> List<BrowseEntry>,
+    onSearch: (suspend (String) -> List<BrowseEntry>)?,
+    onLocalRadio: (suspend () -> List<BrowseEntry>)?,
+    onQuality: (suspend (String) -> StreamQuality?)?,
     onPlayEntry: suspend (BrowseEntry) -> Boolean,
     onPulseHaptic: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+
+    var query by remember { mutableStateOf("") }
+    // false = kohalikud raadiod (vaikimisi), true = kategooriate sirvimine
+    var browsing by remember { mutableStateOf(onLocalRadio == null) }
     var path by remember { mutableStateOf(listOf(TuneInPathNode("TuneIn", null))) }
     var entries by remember { mutableStateOf<List<BrowseEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    var playing by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val currentKey = path.last().key
+    var failed by remember { mutableStateOf(false) }
+    var playingTitle by remember { mutableStateOf<String?>(null) }
+    // Jaamad, mida parajasti lemmikuks lisatakse (tärni asemel ring)
+    var addingTitles by remember { mutableStateOf(setOf<String>()) }
 
-    LaunchedEffect(currentKey) {
+    val currentKey = path.last().key
+    val trimmedQuery = query.trim()
+    val searching = onSearch != null && trimmedQuery.length >= 2
+
+    LaunchedEffect(searching, trimmedQuery, browsing, currentKey) {
+        failed = false
+        if (searching) delay(400) // oota, kuni kirjutamine peatub
         loading = true
-        error = null
-        entries = try {
-            onBrowse(currentKey)
+        try {
+            entries = when {
+                searching -> onSearch!!(trimmedQuery)
+                !browsing && onLocalRadio != null -> onLocalRadio()
+                else -> onBrowse(currentKey)
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            error = e.message ?: "Browse error"
-            emptyList()
+            failed = true
+            entries = emptyList()
         } finally {
             loading = false
+        }
+    }
+
+    val openEntry: (BrowseEntry) -> Unit = { entry ->
+        onPulseHaptic()
+        if (entry.isBrowsable && !entry.isPlayable) {
+            query = ""
+            browsing = true
+            path = path + TuneInPathNode(entry.title.ifBlank { "TuneIn" }, entry.browseKey)
+        } else if (entry.isPlayable && playingTitle == null) {
+            scope.launch {
+                playingTitle = entry.title
+                val ok = onPlayEntry(entry)
+                playingTitle = null
+                if (!ok) Toast.makeText(context, strings.playFailed, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Tärn on lüliti: ☆ lisab lemmikuks, ★ eemaldab (sama lemmiku NAD-ist)
+    val toggleStation: (BrowseEntry, Preset?) -> Unit = { entry, existing ->
+        val action: (suspend () -> Boolean)? = when {
+            existing != null && onRemovePreset != null -> { { onRemovePreset(existing) } }
+            existing == null && onAddStation != null -> { { onAddStation(entry) } }
+            else -> null
+        }
+        if (action != null && entry.title !in addingTitles) {
+            onPulseHaptic()
+            scope.launch {
+                addingTitles = addingTitles + entry.title
+                val ok = action()
+                addingTitles = addingTitles - entry.title
+                if (!ok) Toast.makeText(context, strings.presetActionFailed, Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -677,33 +974,60 @@ private fun TuneInBrowseSheet(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (path.size > 1) {
-                        IconButton(
-                            onClick = {
-                                path = path.dropLast(1)
-                            }
-                        ) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = null)
-                        }
+                if (!searching && browsing && (path.size > 1 || onLocalRadio != null)) {
+                    IconButton(onClick = {
+                        if (path.size > 1) path = path.dropLast(1) else browsing = false
+                    }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = null)
                     }
-                    Text(
-                        text = path.last().title.ifBlank { "TuneIn" },
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
                 }
-
+                Text(
+                    text = when {
+                        searching -> strings.radio
+                        browsing -> path.last().title.ifBlank { "TuneIn" }
+                        else -> strings.localRadio
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.Close, contentDescription = null)
                 }
             }
 
+            if (onSearch != null) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(strings.searchStations) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = null)
+                            }
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
+                    shape = RoundedCornerShape(14.dp)
+                )
+            }
+
+            // Uus tulemus laeb, vana on veel näha: õhuke riba, et oleks näha, et midagi toimub
+            if (loading && entries.isNotEmpty()) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
+            }
+
             when {
-                loading -> {
+                loading && entries.isEmpty() -> {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -714,105 +1038,174 @@ private fun TuneInBrowseSheet(
                     }
                 }
 
-                error != null -> {
-                    Text(
-                        text = error ?: "Unknown error",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
+                failed -> Text(
+                    text = strings.presetActionFailed,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium
+                )
 
-                entries.isEmpty() -> {
-                    Text(
-                        text = "No items found",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
+                entries.isEmpty() -> Text(
+                    text = strings.noResults,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
 
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(entries) { entry ->
-                            Surface(
-                                onClick = {
-                                    onPulseHaptic()
-                                    if (entry.isBrowsable && !entry.isPlayable) {
-                                        path = path + TuneInPathNode(
-                                            title = entry.title.ifBlank { "Browse" },
-                                            key = entry.browseKey
-                                        )
-                                    } else if (entry.isPlayable && !playing) {
-                                        scope.launch {
-                                            playing = true
-                                            val ok = onPlayEntry(entry)
-                                            if (!ok) {
-                                                error = "Ei saanud jaama mängima panna"
-                                            }
-                                            playing = false
-                                        }
-                                    } else if (entry.isBrowsable) {
-                                        path = path + TuneInPathNode(
-                                            title = entry.title.ifBlank { "Browse" },
-                                            key = entry.browseKey
-                                        )
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                else -> LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 560.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(entries) { entry ->
+                        val stationUrl = presetUrlOf(entry)
+                        // Tärn käib täpselt selle rea (kataloogi + jaama) kohta, URL-i järgi.
+                        // Nii ei eemalda TuneIn-i rea tärn kogemata Airable'i lemmikut.
+                        val existingPreset = stationUrl?.let { url ->
+                            presets.firstOrNull { it.url == url || it.url.startsWith("$url/") }
+                        }
+                        StationRow(
+                            entry = entry,
+                            strings = strings,
+                            canAdd = onAddStation != null && stationUrl != null,
+                            isPreset = existingPreset != null,
+                            isAdding = entry.title in addingTitles,
+                            isStarting = playingTitle == entry.title,
+                            onQuality = onQuality,
+                            onClick = { openEntry(entry) },
+                            onAdd = { toggleStation(entry, existingPreset) }
+                        )
+                    }
+
+                    if (!searching && !browsing) {
+                        item {
+                            TextButton(
+                                onClick = { browsing = true },
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = entry.title.ifBlank { "Untitled" },
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            fontWeight = FontWeight.Medium,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        if (entry.subtitle.isNotBlank()) {
-                                            Text(
-                                                text = entry.subtitle,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-
-                                    if (playing) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp
-                                        )
-                                    } else {
-                                        Icon(
-                                            imageVector = when {
-                                                entry.isBrowsable && !entry.isPlayable -> Icons.Default.ChevronRight
-                                                entry.isPlayable -> Icons.Default.PlayArrow
-                                                else -> Icons.Default.Radio
-                                            },
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
+                                Text(strings.browseAllCategories)
+                                Spacer(Modifier.width(4.dp))
+                                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp))
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StationRow(
+    entry: BrowseEntry,
+    strings: StringResources,
+    canAdd: Boolean,
+    isPreset: Boolean,
+    isAdding: Boolean,
+    isStarting: Boolean,
+    onQuality: (suspend (String) -> StreamQuality?)?,
+    onClick: () -> Unit,
+    onAdd: () -> Unit
+) {
+    // Kvaliteet laetakse ainult nähtavate ridade kohta (LazyColumn) ja jäetakse meelde
+    val stationId = presetUrlOf(entry)?.substringAfter(':', "").orEmpty()
+    val quality by produceState<StreamQuality?>(initialValue = null, stationId) {
+        value = if (stationId.startsWith("s") && onQuality != null) onQuality(stationId) else null
+    }
+
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (entry.imageUrl.isNotBlank()) {
+                AsyncImage(
+                    model = entry.imageUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Surface(
+                    modifier = Modifier.size(40.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (entry.isPlayable) Icons.Default.Radio else Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = entry.title.ifBlank { "TuneIn" },
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (entry.subtitle.isNotBlank()) {
+                    Text(
+                        text = entry.subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                // Kataloogi silt ("TuneIn" / "Airable") + kvaliteet, kui teada
+                val source = presetUrlOf(entry)?.substringBefore(':')?.takeIf { it.isNotBlank() }
+                if (source != null || quality != null) {
+                    Row(
+                        modifier = Modifier.padding(top = 3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        source?.let { QualityBadge(it) }
+                        quality?.let { QualityBadge(it.label) }
+                    }
+                }
+            }
+
+            // ⭐ lisa jaam lemmikuks (täidetud tärn = juba lemmik)
+            if (canAdd) {
+                IconButton(onClick = onAdd, modifier = Modifier.size(40.dp)) {
+                    if (isAdding) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            if (isPreset) Icons.Default.Star else Icons.Default.StarBorder,
+                            contentDescription = if (isPreset) strings.remove else strings.addToPresets,
+                            tint = if (isPreset) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Box(modifier = Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+                if (isStarting) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        if (entry.isBrowsable && !entry.isPlayable) Icons.Default.ChevronRight else Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
@@ -933,3 +1326,73 @@ fun PresetListItem(
 }
 
 
+
+/** TuneIn jaama lemmiku-URL (nt "TuneIn:s25480") BluOS-i playUrl-ist; null, kui see pole jaam. */
+private fun presetUrlOf(entry: BrowseEntry): String? {
+    val play = entry.playUrl.ifBlank { entry.autoplayUrl }
+    if (play.isBlank()) return null
+    val full = if (play.startsWith("http", ignoreCase = true)) play else "http://nad$play"
+    return runCatching { Uri.parse(full).getQueryParameter("url") }.getOrNull()?.takeIf { it.isNotBlank() }
+}
+
+/** Kogu kiirnuppude järjekord võtmetena (Spotify, Raadio, kõik lemmikud), nagu PresetSelector seda näitab. */
+internal fun quickOrderKeys(presets: List<Preset>, saved: List<String>): List<String> =
+    applyQuickButtonOrder(
+        buildList {
+            add(QuickButtonItem.Spotify)
+            add(QuickButtonItem.TuneIn)
+            presets.forEach { add(QuickButtonItem.PresetItem(it)) }
+        },
+        saved
+    ).map { it.orderKey }
+
+/**
+ * Alamhulga (nt ainult raadio lemmikud) uus järjekord kirjutatakse üldisesse järjekorda
+ * samadele kohtadele — teiste nuppude (Spotify jne) asukoht ei muutu.
+ */
+internal fun mergeSubsetOrder(full: List<String>, subsetNewOrder: List<String>): List<String> {
+    val subset = subsetNewOrder.toSet()
+    val next = subsetNewOrder.iterator()
+    return full.map { key -> if (key in subset && next.hasNext()) next.next() else key }
+}
+
+/**
+ * Raadio lemmikute haldus (Raadio playeri ✎ nupust): järjekord, ümbernimetamine,
+ * eemaldamine ja uue jaama otsing. Sama leht mis lemmikutel, ainult raadiojaamadega.
+ */
+@Composable
+fun RadioFavoritesSheet(
+    radioPresets: List<Preset>,
+    allPresets: List<Preset>,
+    quickButtonOrder: List<String>,
+    strings: StringResources,
+    presetActions: PresetActions?,
+    onOrderChange: (List<String>) -> Unit,
+    onSelect: (Int) -> Unit,
+    onSearchStations: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    QuickButtonOrderSheet(
+        buttons = radioPresets.map { QuickButtonItem.PresetItem(it) },
+        strings = strings,
+        onDismiss = onDismiss,
+        onOrderChange = { radioKeys ->
+            onOrderChange(mergeSubsetOrder(quickOrderKeys(allPresets, quickButtonOrder), radioKeys))
+        },
+        onActivate = { item -> (item as? QuickButtonItem.PresetItem)?.let { onSelect(it.preset.id) } },
+        // "Lisa praegu mängiv" siin ei näita — raadiojaamu lisatakse otsingu kaudu
+        presetActions = presetActions?.let {
+            PresetActions(
+                canAddCurrent = false,
+                onAddCurrent = it.onAddCurrent,
+                onAddStation = it.onAddStation,
+                onRename = it.onRename,
+                onDelete = it.onDelete
+            )
+        },
+        title = strings.radioFavorites,
+        hint = strings.radioReorderHint,
+        showTopBadges = false,
+        onSearchStations = onSearchStations
+    )
+}

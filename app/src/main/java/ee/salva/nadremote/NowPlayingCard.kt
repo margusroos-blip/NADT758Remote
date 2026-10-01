@@ -31,6 +31,7 @@ fun NowPlayingCard(
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
     onOpenSpotifyApp: (() -> Unit)? = null,
+    pending: PendingPlay? = null,
     embedded: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -39,6 +40,14 @@ fun NowPlayingCard(
     val primaryMaxLines = if (isRadioText) 2 else 1
     val secondaryMaxLines = if (isRadioText) 2 else 1
 
+    // Jaama vahetuse ajal näita kohe valitud jaama + "Ühendamine…", mitte vana lugu
+    val isPending = pending != null
+    val pendingIsSpotify = pending?.title.equals("Spotify", ignoreCase = true)
+    val shownImage = if (isPending) pending?.imageUrl.orEmpty() else nowPlaying.imageUrl
+    val shownTitle = pending?.title?.takeIf { it.isNotBlank() } ?: nowPlaying.displayTitle
+    val shownSubtitle = if (isPending) strings.connecting else nowPlaying.displaySubtitle
+    val shownAlbum = if (isPending) "" else nowPlaying.displayAlbum
+
     val content: @Composable () -> Unit = {
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -46,7 +55,7 @@ fun NowPlayingCard(
         ) {
             // Album art / station logo. Spotify puhul avab pildile vajutus telefonis Spotify äpi
             // (otsing, playlistid); nurgas väike logo annab sellest märku.
-            val openSpotify = onOpenSpotifyApp?.takeIf { nowPlaying.isSpotify }
+            val openSpotify = onOpenSpotifyApp?.takeIf { nowPlaying.isSpotify && !isPending }
             Box(
                 modifier = Modifier
                     .size(56.dp)
@@ -61,9 +70,9 @@ fun NowPlayingCard(
                         } else Modifier
                     )
             ) {
-                if (nowPlaying.imageUrl.isNotBlank()) {
+                if (shownImage.isNotBlank()) {
                     AsyncImage(
-                        model = nowPlaying.imageUrl,
+                        model = shownImage,
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxSize()
@@ -80,6 +89,7 @@ fun NowPlayingCard(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 when {
+                                    isPending -> if (pendingIsSpotify) Icons.Default.MusicNote else Icons.Default.Radio
                                     nowPlaying.isSpotify -> Icons.Default.MusicNote
                                     nowPlaying.isRadio -> Icons.Default.Radio
                                     else -> Icons.Default.MusicNote
@@ -116,15 +126,15 @@ fun NowPlayingCard(
             // Title, subtitle, album
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    nowPlaying.displayTitle,
+                    shownTitle,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = primaryMaxLines,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (nowPlaying.displaySubtitle.isNotBlank()) {
+                if (shownSubtitle.isNotBlank()) {
                     Text(
-                        nowPlaying.displaySubtitle,
+                        shownSubtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = secondaryMaxLines,
@@ -132,20 +142,33 @@ fun NowPlayingCard(
                     )
                 }
                 // Album - ainult on-demand muusika puhul
-                if (nowPlaying.displayAlbum.isNotBlank()) {
+                if (shownAlbum.isNotBlank()) {
                     Text(
-                        nowPlaying.displayAlbum,
+                        shownAlbum,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                // Voo kvaliteet otse NAD-ist (BluOS streamFormat), nt "MP3 · 320 kbps"
+                val quality = nowPlaying.qualityLabel
+                if (!isPending && quality.isNotBlank()) {
+                    Spacer(Modifier.height(3.dp))
+                    QualityBadge(quality)
+                }
             }
             
             Spacer(Modifier.width(8.dp))
-            
-            // Playback controls
+
+            if (isPending) {
+                // BluOS vahetab allikat / puhverdab — näita, et vajutus läks läbi
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                }
+            } else if (!isRadioText) {
+            // Playback controls. Raadio puhul neid pole: nagu vanal puldil — vajutad jaama
+            // ja see mängib; vaikust teeb vaigistus või toide.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(0.dp)
@@ -157,12 +180,12 @@ fun NowPlayingCard(
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onSkipPrevious() 
                         },
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(42.dp)
                     ) {
                         Icon(
                             Icons.Default.SkipPrevious,
                             contentDescription = null,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(24.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -174,12 +197,12 @@ fun NowPlayingCard(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onPlayPause() 
                     },
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         if (nowPlaying.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = null,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(28.dp)
                     )
                 }
                 
@@ -190,16 +213,17 @@ fun NowPlayingCard(
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onSkipNext() 
                         },
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(42.dp)
                     ) {
                         Icon(
                             Icons.Default.SkipNext,
                             contentDescription = null,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(24.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+            }
             }
         }
     }

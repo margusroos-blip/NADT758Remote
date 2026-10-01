@@ -31,16 +31,44 @@ class Prefs(private val context: Context) {
     companion object {
         private val KEY_IP = stringPreferencesKey("device_ip")
         private val KEY_NAME = stringPreferencesKey("device_name")
+        private val KEY_MAC = stringPreferencesKey("device_mac")
         private val KEY_THEME = stringPreferencesKey("app_theme")
         private val KEY_LANGUAGE = stringPreferencesKey("app_language")
         private val KEY_FAVORITE_SOURCES = stringPreferencesKey("favorite_sources")
         private val KEY_FAVORITE_PRESETS = stringPreferencesKey("favorite_presets")
         private val KEY_AUTO_RECONNECT = stringPreferencesKey("auto_reconnect")
         private val KEY_QUICK_BUTTON_ORDER = stringPreferencesKey("quick_button_order")
+        private val KEY_LAST_RADIO_NAME = stringPreferencesKey("last_radio_name")
+        private val KEY_LAST_RADIO_URL = stringPreferencesKey("last_radio_url")
+        private val KEY_LAST_RADIO_IMAGE = stringPreferencesKey("last_radio_image")
+        private val KEY_LAST_RADIO_PLAY = stringPreferencesKey("last_radio_play")
+    }
+
+    // Viimati kuulatud raadiojaam ("Raadio" virtuaalne sisend jätkab sellega)
+    val lastRadio: Flow<LastRadio?> = context.dataStore.data.map { prefs ->
+        val url = prefs[KEY_LAST_RADIO_URL].orEmpty()
+        val play = prefs[KEY_LAST_RADIO_PLAY].orEmpty()
+        if (url.isBlank() && play.isBlank()) null
+        else LastRadio(
+            name = prefs[KEY_LAST_RADIO_NAME].orEmpty(),
+            url = url,
+            imageUrl = prefs[KEY_LAST_RADIO_IMAGE].orEmpty(),
+            playUrl = play
+        )
+    }
+
+    suspend fun setLastRadio(radio: LastRadio) {
+        context.dataStore.edit {
+            it[KEY_LAST_RADIO_NAME] = radio.name
+            it[KEY_LAST_RADIO_URL] = radio.url
+            it[KEY_LAST_RADIO_IMAGE] = radio.imageUrl
+            it[KEY_LAST_RADIO_PLAY] = radio.playUrl
+        }
     }
 
     val savedIp: Flow<String> = context.dataStore.data.map { it[KEY_IP] ?: "" }
     val savedName: Flow<String> = context.dataStore.data.map { it[KEY_NAME] ?: "" }
+    val savedMac: Flow<String> = context.dataStore.data.map { it[KEY_MAC] ?: "" }
     
     // Lemmik sisendid (max 4) - salvestatud kui "1,3,5,7"
     val favoriteSources: Flow<List<Int>> = context.dataStore.data.map { prefs ->
@@ -89,10 +117,11 @@ class Prefs(private val context: Context) {
         }
     }
 
-    suspend fun saveDevice(ip: String, name: String = "") {
+    suspend fun saveDevice(ip: String, name: String = "", mac: String = "") {
         context.dataStore.edit {
             it[KEY_IP] = ip
             it[KEY_NAME] = name
+            it[KEY_MAC] = mac
         }
     }
 
@@ -140,6 +169,7 @@ class Prefs(private val context: Context) {
         context.dataStore.edit {
             it.remove(KEY_IP)
             it.remove(KEY_NAME)
+            it.remove(KEY_MAC)
         }
     }
 }
