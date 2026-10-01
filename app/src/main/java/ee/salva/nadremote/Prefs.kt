@@ -21,9 +21,22 @@ enum class AppLanguage(val code: String, val displayName: String) {
     SWEDISH("sv", "Svenska"),
     NORWEGIAN("no", "Norsk"),
     DANISH("da", "Dansk"),
-    FRENCH("fr", "FranÃ§ais"),
+    FRENCH("fr", "Français"),
     ITALIAN("it", "Italiano"),
-    SPANISH("es", "EspaÃ±ol")
+    SPANISH("es", "Español");
+
+    companion object {
+        /**
+         * Telefoni keel, kui äpp seda toetab; muidu inglise. Kasutatakse seni, kuni
+         * kasutaja pole seadetes ise keelt valinud.
+         */
+        fun fromSystem(): AppLanguage {
+            val code = java.util.Locale.getDefault().language.lowercase()
+            // Norra: Android annab "nb" (bokmål) või "nn" (nynorsk), meil on "no"
+            val normalized = if (code == "nb" || code == "nn") "no" else code
+            return values().firstOrNull { it.code == normalized } ?: ENGLISH
+        }
+    }
 }
 
 class Prefs(private val context: Context) {
@@ -110,11 +123,10 @@ class Prefs(private val context: Context) {
     }
     
     val language: Flow<AppLanguage> = context.dataStore.data.map { prefs ->
-        try {
-            AppLanguage.valueOf(prefs[KEY_LANGUAGE] ?: AppLanguage.ENGLISH.name)
-        } catch (e: Exception) {
-            AppLanguage.ENGLISH
-        }
+        // Kasutaja valik, kui see on olemas; muidu telefoni keel
+        prefs[KEY_LANGUAGE]
+            ?.let { saved -> runCatching { AppLanguage.valueOf(saved) }.getOrNull() }
+            ?: AppLanguage.fromSystem()
     }
 
     suspend fun saveDevice(ip: String, name: String = "", mac: String = "") {

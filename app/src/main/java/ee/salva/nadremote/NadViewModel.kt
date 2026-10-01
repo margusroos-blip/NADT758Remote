@@ -71,7 +71,7 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppTheme.SYSTEM)
     
     val language: StateFlow<AppLanguage> = prefs.language
-        .stateIn(viewModelScope, SharingStarted.Eagerly, AppLanguage.ENGLISH)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppLanguage.fromSystem())
     
     // Favorite sources (max 4)
     val favoriteSources: StateFlow<List<Int>> = prefs.favoriteSources
@@ -91,7 +91,7 @@ class NadViewModel(app: Application) : AndroidViewModel(app) {
     // Localized strings
     val strings: StateFlow<StringResources> = language
         .map { Strings.get(it) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, EnglishStrings)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, Strings.get(AppLanguage.fromSystem()))
     
     // Computed: sources to display (favorites if set, else enabled sources, max 4)
     val displaySources: StateFlow<Map<Int, String>> = combine(
