@@ -118,7 +118,7 @@ interface StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object EnglishStrings : StringResources {
-    override val appName = "NAD Remote"
+    override val appName = "Remote for NAD"
     
     override val settings = "Settings"
     override val language = "Language"
@@ -206,7 +206,7 @@ object EnglishStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object EstonianStrings : StringResources {
-    override val appName = "NAD Pult"
+    override val appName = "Remote for NAD"
     
     override val settings = "Seaded"
     override val language = "Keel"
@@ -294,7 +294,7 @@ object EstonianStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object GermanStrings : StringResources {
-    override val appName = "NAD Fernbedienung"
+    override val appName = "Remote for NAD"
     
     override val settings = "Einstellungen"
     override val language = "Sprache"
@@ -382,7 +382,7 @@ object GermanStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object FinnishStrings : StringResources {
-    override val appName = "NAD KaukosÃ¤Ã¤din"
+    override val appName = "Remote for NAD"
     
     override val settings = "Asetukset"
     override val language = "Kieli"
@@ -470,7 +470,7 @@ object FinnishStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object SwedishStrings : StringResources {
-    override val appName = "NAD FjÃ¤rrkontroll"
+    override val appName = "Remote for NAD"
     
     override val settings = "InstÃ¤llningar"
     override val language = "SprÃ¥k"
@@ -558,7 +558,7 @@ object SwedishStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object NorwegianStrings : StringResources {
-    override val appName = "NAD Fjernkontroll"
+    override val appName = "Remote for NAD"
     
     override val settings = "Innstillinger"
     override val language = "SprÃ¥k"
@@ -646,7 +646,7 @@ object NorwegianStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object DanishStrings : StringResources {
-    override val appName = "NAD Fjernbetjening"
+    override val appName = "Remote for NAD"
     
     override val settings = "Indstillinger"
     override val language = "Sprog"
@@ -734,7 +734,7 @@ object DanishStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object FrenchStrings : StringResources {
-    override val appName = "NAD TÃ©lÃ©commande"
+    override val appName = "Remote for NAD"
     
     override val settings = "ParamÃ¨tres"
     override val language = "Langue"
@@ -822,7 +822,7 @@ object FrenchStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object ItalianStrings : StringResources {
-    override val appName = "NAD Telecomando"
+    override val appName = "Remote for NAD"
     
     override val settings = "Impostazioni"
     override val language = "Lingua"
@@ -910,7 +910,7 @@ object ItalianStrings : StringResources {
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 object SpanishStrings : StringResources {
-    override val appName = "NAD Control Remoto"
+    override val appName = "Remote for NAD"
     
     override val settings = "Ajustes"
     override val language = "Idioma"
